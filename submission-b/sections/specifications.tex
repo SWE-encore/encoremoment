@@ -1,0 +1,264 @@
+\section{Specifications}
+All procedures below describe the implementation to be built. The shared packet header contains \code{session\_id}, sensor/control generation, sequence number, capture timestamp, format, and playback epoch. A generation changes when a sensor is disabled/re-enabled; a playback epoch changes on seek or content change. Event IDs remain stable across updates and retries. State-changing requests carry an idempotency key. Invalid or expired inputs return an explicit status rather than silently producing a successful result.
+
+\subsection{Requirement 1: Echo Cancellation}
+\textit{Input/output:} microphone PCM and the controlled player's playback reference produce cleaned audience PCM and an AEC status. Both streams use 48~kHz during AEC; output is resampled to the audio model's 32~kHz input. Playback/capture timestamps use the PC's monotonic clock. The playback probe and microphone DSP share one top-level GStreamer pipeline, with the probe initialized first~\cite{gst-aec}.
+\par\smallskip\noindent\begin{minipage}{\columnwidth}
+\begin{lstlisting}
+on microphone_block(m, capture_time):
+  if microphone_disabled: return
+  ref = playback_reference_for(capture_time)
+  if AEC_requested and ref.valid:
+    y = echo_cancel(m, ref)
+    status = ACTIVE
+  else:
+    y = m
+    status = reference_status(AEC_requested)
+  enqueue_analysis(resample(y, 32000), status)
+\end{lstlisting}
+\end{minipage}\par
+Playback seek, device change, or timing discontinuity resets alignment and marks AEC as warming up. If the reference is unavailable, the interface reports this and marks uncancelled input; it does not claim echo removal. Automatic gain control and additional noise suppression are disabled in the initial AEC trial to avoid concealing changes in nonverbal reaction strength. Their later use requires preservation checks. Saved audience footage uses the permitted captured microphone track, not the program's reference audio.
+\checkcase{Compare AEC-on/off with soundtrack-only, audience-only, and overlapping playback/reaction recordings. Inspect residual playback and whether laughter, scream, and gasp remain recognizable; include seeks and output-device changes.}
+
+\subsection{Requirement 2: Reaction Recognition}
+\textit{Input/output:} timestamped cleaned audio and, when enabled, camera frames produce labeled reaction intervals. The GPU worker loads PANNs once and runs overlapping audio windows. Window length, stride, thresholds, and model checksum are versioned configuration. Framewise predictions are approximate temporal evidence, not exact acoustic onset measurements~\cite{panns}.
+
+The initial fusion rule uses high-confidence audio alone, or a lower audio threshold supported by a strong valid facial reaction. For each sound class $c$, $p_c$ is model confidence, $I_a$ is normalized audio strength, and $V=\max_i v_i$ is the maximum valid per-face reaction score. Multiple weak faces do not accumulate into a strong response. A strong reaction from one person can therefore contribute without requiring a group average. No camera or missing faces means audio-only operation, not a failed session. Facial evidence never relabels a gasp as a sigh or substitutes an inferred emotion for a required sound class.
+\par\smallskip\noindent\begin{minipage}{\columnwidth}
+\begin{lstlisting}
+for each aligned analysis_window w:
+  if stale_generation(w): discard(w); continue
+  p = audio_model(w.audio)
+  c = best_of(p, [laughter, scream, gasp])
+  V = max_valid_face_score(w.frames, default=0)
+  strong = p[c] >= high[c] and Ia(w) >= min_audio
+  supported = p[c] >= low[c] and V >= visual_gate
+  accepted = strong or supported
+  event = update_interval(c, accepted, hysteresis)
+  emit_if_changed(event.OPEN, UPDATE, or FINAL)
+\end{lstlisting}
+\end{minipage}\par
+Facial observations use normalized landmark/blendshape changes with pose, visibility, and tracking-validity checks; they do not identify a person's internal state. Open/close hysteresis and a gap tolerance merge adjacent windows of the same class. Different classes remain distinguishable. Ordinary speech, background noise, and uncertainty must pass the same evidence gates rather than automatically becoming an event. Thresholds are calibrated on development recordings and evaluated on separate recordings; no accuracy percentage is asserted here.
+\checkcase{Use labeled laughter/scream/gasp, speech, soundtrack-only, and mixed recordings. Test camera-off operation, missing/occluded faces, one strong person, and several weak responses. Report per-class errors and measured detection delay.}
+
+\subsection{Requirement 3: Event Records}
+\textit{Input/output:} an accepted interval and playback anchors produce an upserted event with type, observed intensity, title, and content timecode. Each player anchor records capture time $t_0$, playback position $p_0$, playback rate $r$, play state, and content identity. Within a continuous playing epoch, timecode is $p(t)=p_0+r(t-t_0)$; pause keeps position fixed. An event crossing a seek/content boundary is split by epoch. Network arrival time never substitutes for capture time.
+
+Audio intensity $I_a$ is the cleaned-audio RMS level relative to the calibrated room baseline, clipped to a configured range. Visual intensity uses the largest valid per-face observation $V$. The working combined intensity is $I=\max(I_a,V)$ after per-modality normalization. Stored fields retain both values and modality availability; confidence is not used as intensity. This is a ranking signal within a viewing session, not a calibrated physical loudness or emotional score.
+\par\smallskip\noindent\begin{minipage}{\columnwidth}
+\begin{lstlisting}
+on event_update(e):
+  anchor = get_anchor(e.start, e.epoch)
+  if anchor missing: hold_pending(e); return
+  record = {e.id, e.type, observed_intensity(e),
+            anchor.title, map_time(e, anchor)}
+  atomic:
+    require current(e) and not deleted(e.id)
+    upsert_event(record, key=(session_id, e.id))
+    append_result_change(record)
+  acknowledge_job()
+\end{lstlisting}
+\end{minipage}\par
+Additional implementation fields include capture start/end, model/configuration version, AEC mode, event revision, and clip availability. Missing playback context is visible as pending and is retried; it is not fabricated. The controlled-player handshake supplies title and anchors before normal sensing begins.
+\checkcase{Replay the same input/result twice and obtain one event. Check timecodes before/after pause, seek, rate change, and title change, including delayed network delivery.}
+
+\subsection{Requirement 4: Highlights}
+\textit{Input/output:} a session's committed event records and local clip index produce Tonight's Highlights. Finalized events are sorted by descending observed intensity, with capture time and event ID as deterministic tie-breakers. Events without footage remain reviewable as metadata. Overlapping events may point to one clip without losing their separate event records.
+\par\smallskip\noindent\begin{minipage}{\columnwidth}
+\begin{lstlisting}
+on show_highlights(session):
+  events = final_undeleted_events(session)
+  events.sort_by(-intensity, start, event_id)
+  for e in events:
+    clip = local_clip_index.lookup(e.id)
+    render(e, clip.status, clip.path_if_ready)
+  refresh_when_pending_clip_finishes()
+\end{lstlisting}
+\end{minipage}\par
+A clip has pending, ready, partial, unavailable, or deletion-pending status. The UI does not show a playable link until the saved file has been finalized and checked. Highlight generation does not infer that the loudest reaction was the viewer's favorite scene.
+\checkcase{Use mixed intensities, equal scores, shared clips, camera-off events, failed exports, and pending deletions. Verify ordering and every displayed link.}
+
+\subsection{Requirement 5: Camera Activation}
+\textit{Input/output:} an explicit enable action in an active session opens the camera and starts a new capture generation. The initial and restored application state is camera-off. Permission denial or device failure keeps it off. The control gate is checked before capture, enqueue, transmission, and final clip commit.
+\par\smallskip\noindent\begin{minipage}{\columnwidth}
+\begin{lstlisting}
+on enable_camera_clicked():
+  require active_session and device_permission
+  generation = next_camera_generation()
+  open_camera(generation)
+  if first_frame_received: state = ACTIVE
+  else: close_camera(); state = OFF_WITH_ERROR
+on disable_camera_clicked():
+  close_video_admission_gate()
+  invalidate_camera_generation()
+  stop_capture_upload(); drop_unsent_video()
+  cancel_clip_jobs(); clear_unsaved_video()
+  send_control_update(); state = OFF
+\end{lstlisting}
+\end{minipage}\par
+Disabling the camera does not disable audio recognition or delete already saved clips. In-flight server results carry their original generation and cannot authorize new camera capture or resurrect cancelled clips. A later enable starts an empty buffer; it never reuses footage from before activation.
+\checkcase{Inspect device access, disk writes, and network packets before enable, after deny, and after disable. Race disable against queued upload and clip completion.}
+
+\subsection{Requirement 6: Camera Indication}
+\textit{Input/output:} actual capture state produces a persistent indicator and an always-available Stop control. The interface distinguishes Starting, Camera on, Stopping, Off, and Error. It reflects device callbacks rather than only the user's requested switch position.
+\par\smallskip\noindent\begin{minipage}{\columnwidth}
+\begin{lstlisting}
+on camera_state_changed(actual_state):
+  render_persistent_indicator(actual_state)
+  show_stop_until_capture_fully_stops()
+on stop_clicked():
+  invoke_camera_disable_procedure()
+on camera_device_lost():
+  close_video_admission_gate()
+  stop_capture_upload(); cancel_clip_jobs()
+  clear_unsaved_video(); render_state(ERROR)
+\end{lstlisting}
+\end{minipage}\par
+The active indicator remains visible while navigating between the timeline and highlights. Camera capture is stopped before the indicator reports Off. Device disconnection cannot leave an apparently active camera or an unreported background recording.
+\checkcase{Switch views during capture, stop while export is pending, and unplug the webcam. Compare the indicator against actual pipeline state and media writes.}
+
+\subsection{Requirement 7: Review and Deletion}
+\textit{Input/output:} a selected saved clip is opened locally, or a deletion request removes that clip and its associated media. A persistent deletion operation ID makes retries safe. Local tombstones are written before file deletion and synchronized with the server so delayed work cannot recreate the association.
+\par\smallskip\noindent\begin{minipage}{\columnwidth}
+\begin{lstlisting}
+on delete_clip(clip_id):
+  op = persist_deletion_intent(clip_id)
+  hide_playback_link(); show(PENDING)
+  cancel_exports_and_mark_tombstone(clip_id)
+  unlink_clip_from_all_associated_events()
+  delete_clip_files_thumbnails_and_temp_exports()
+  retry_server_media_cleanup(op)
+on remote_ack(op) and local_cleanup_done(op):
+  mark_completed(op); show(COMPLETED)
+\end{lstlisting}
+\end{minipage}\par
+The baseline does not store completed video in the cloud, but it still cleans associated temporary server payloads and clip references. Reference counts prevent deleting a file still used by a different retained clip; deleting a shared clip removes all links to that same clip. Non-media event metadata may remain with its clip marked deleted. Offline requests stay pending until required remote cleanup is acknowledged. On restart, the client resumes incomplete deletions before permitting export commits.
+\checkcase{Delete during playback/export, repeat deletion, disconnect during cleanup, and restart the app. Verify that no stale response restores the media or play link.}
+
+\subsection{Requirement 8: Microphone Control}
+\textit{Input/output:} disabling the microphone closes audio capture, audio upload, and acceptance of new audio-triggered events. Player output can continue for viewing. Camera state is independent; with audio sensing off, this baseline does not create new sound-class events from facial observations alone.
+\par\smallskip\noindent\begin{minipage}{\columnwidth}
+\begin{lstlisting}
+on microphone_disable():
+  close_audio_admission_gate()
+  invalidate_audio_generation()
+  stop_microphone(); drop_unsent_audio()
+  stop_audio_track_in_future_camera_segments()
+  reject_late_audio_results_in_client()
+  send_server_control_update()
+  render_microphone_disabled()
+on worker_before_commit(job):
+  require audio_generation_and_session_current()
+\end{lstlisting}
+\end{minipage}\par
+Server cancellation takes effect when the control update is received; during disconnection, expired session leases also reject new commits. The client immediately refuses late results and does not present them as new detections. Re-enabling starts a new generation and resets AEC state. Already saved media remains available for review; recording boundaries preserve whether an audio track was present.
+\checkcase{Disable during an open event and during a queued inference. Confirm no new accepted audio event, microphone read, or audio upload occurs at the client after the control takes effect.}
+
+\subsection{Requirement 9: Viewing Interface}
+\textit{Input/output:} ordered result changes and local sensor/connection state produce the timeline, highlight list, and status panel. HTTP endpoints manage sessions, context, controls, events, and deletion acknowledgments. A WSS connection carries bounded analysis messages and event updates; binary payloads include their timestamped headers. Control messages have priority over media. TLS and session-scoped access are implementation mechanisms, not additional numbered requirements.
+\par\smallskip\noindent\begin{minipage}{\columnwidth}
+\begin{lstlisting}
+on result(change):
+  if wrong_session(change): return
+  buffer_by_cursor(change)
+  for next in contiguous_after(saved_cursor):
+    atomic:
+      apply_current_newer_revision(next)
+      persist_result_cursor(next.cursor)
+  notify_UI_without_blocking_capture()
+on connection_lost():
+  show(DISCONNECTED); mark_live_results_stale()
+\end{lstlisting}
+\end{minipage}\par
+The screen displays microphone/camera state, requested and effective AEC mode, connection state, and clip/deletion progress. Per-session result cursors are contiguous; a gap triggers replay before the persisted cursor advances. Reconnection resumes after the last committed cursor, with snapshot recovery if the replay window has expired. Sensor controls remain usable while disconnected. Queue overflow drops stale analysis media with a visible gap status; it never reports stale inference as current live feedback.
+\checkcase{Deliver out-of-order and duplicated updates, interrupt the socket, and fill the analysis queue. Confirm correct event count, visible connection gaps, and responsive Stop controls.}
+
+\subsection{Requirement 10: Reaction Clips}
+\textit{Input/output:} an event's capture interval selects available audience segments from the PC disk ring and produces a local clip plus availability metadata. GStreamer uses closed-GOP encoding and \code{splitmuxsink}; segment boundaries occur at keyframes and may exceed the requested duration~\cite{gst-ring}. Only finalized segments enter the index. The application's own eviction policy protects pinned segments; automatic file rotation must not remove them.
+
+\textit{Clipping rule.} Let $t_0$ be the capture time at which an event first exceeds its detection threshold. The initial clip interval is $[t_0-P,t_0+Q]$ with pre-context $P=15$~s and post-context $Q=10$~s. An OPEN event immediately pins the available pre-event segments. Each time the threshold is exceeded again (re-fire) at a time not later than the current clip end, the end is extended by $E=5$~s, capped so that the clip never exceeds the maximum length $L=60$~s. Re-fires after the clip end start a new clip. FINAL schedules export once the post-context is available. Editing handles $H_p,H_q$ are retained outside this interval and do not count toward $L$. The rolling buffer must hold at least $P+H_p$ plus the measured trigger delay; a longer delay produces partial coverage that is labeled rather than hidden.
+\par\smallskip\noindent\begin{minipage}{\columnwidth}
+\begin{lstlisting}
+on event_OPEN(e):
+  start = e.trigger_time - P
+  end = e.trigger_time + Q
+  pin_available([start-Hp, end+Hq], e.camera_generation)
+on threshold_refire(e, t):
+  if t <= end:
+    end = min(end + E, start + L)
+    pin_available([start-Hp, end+Hq], e.camera_generation)
+  else: start_new_clip(e, t)
+on event_FINAL(e):
+  wait_until_post_context_or_capture_boundary(e)
+  parts, gaps = finalized_pinned_segments(e.id)
+  if no parts: mark_unavailable(e.id); return
+  tmp = ffmpeg_assemble_compatible_tracks(parts)
+  atomic:
+    require job_current(e) and not deleted(e.id)
+    verify_decodable(tmp); commit_clip_file(tmp)
+    save_index(e.id, coverage, gaps, handles)
+  release_pins(); evict_old_unpinned_segments()
+\end{lstlisting}
+\end{minipage}\par
+The editor's default in/out points exclude editing handles while the saved file retains them. Compatible closed-GOP segments can be remuxed; frame-exact cuts or incompatible tracks require transcoding or separate explicitly marked parts. Audio/video synchronization uses capture timestamps. A microphone-state or camera-format change creates a segment boundary. The system neither fabricates missing footage nor silently concatenates incompatible tracks. If reactions continue after the clip reaches $L$, the next re-fire starts a new linked clip so that the available interval is preserved. At the disk budget limit, unpinned old segments are evicted first; if none can be evicted, capture/export reports storage exhaustion rather than overwriting pinned or saved media.
+\checkcase{Trigger near camera activation, buffer rollover, and session end; inject network delay, overlapping events, format changes, and disk exhaustion. Check decodability, synchronization, actual coverage, and missing-part labels. Check that a single trigger yields a 25~s clip, that each re-fire extends the end by 5~s, and that no clip exceeds $L$.}
+
+\subsection{Requirement 11: Viewing Sessions}
+\textit{Input/output:} Start creates a session and playback handshake; End closes admission and clears unsaved temporary media while retaining previously saved clips and metadata. The camera remains off until explicitly enabled. Start clearly presents microphone sensing and server processing before the user initiates it.
+\par\smallskip\noindent\begin{minipage}{\columnwidth}
+\begin{lstlisting}
+on start_clicked():
+  session = create_session_with_idempotency_key()
+  require player_title_and_anchor_available()
+  initialize_generations_and_empty_buffers()
+  connect_results(0); enable_requested_audio()
+on reconnect():
+  sync_controls_then_deletion_intents()
+  replay_results_after(last_committed_cursor)
+  resend_current_packets_using_original_keys()
+on end_clicked():
+  close_admission(); invalidate_generations()
+  stop_devices_upload(); cancel_unsaved_jobs()
+  delete_unsaved_buffers_and_temporary_exports()
+  send_end_once(); show_cleanup_status()
+\end{lstlisting}
+\end{minipage}\par
+The server enforces unique packet/job/event keys and commits a result cursor with each record change. Duplicated deliveries update the same event. Late results from a closed session cannot start a new export. On connection loss, the local disk ring remains bounded and the UI shows a gap. If a remote End request cannot arrive, its persisted retry and the server session lease drive cleanup; remote cleanup remains visibly pending until acknowledged. Ending a session cancels unsaved exports rather than promising unavailable post-event footage.
+\checkcase{Repeat Start/End, reconnect after a committed-but-unacknowledged result, end while offline, and restart during cleanup. Check one event per stable ID and absence of unsaved media after cleanup.}
+
+\subsection{Requirement 12: AEC Control}
+\textit{Input/output:} the requested AEC toggle changes the processing mode at an audio-block boundary. Requested mode and effective status are stored separately so ``On, reference unavailable'' is distinguishable from active cancellation.
+\par\smallskip\noindent\begin{minipage}{\columnwidth}
+\begin{lstlisting}
+on set_AEC(requested):
+  at_next_audio_boundary:
+    mode_revision += 1
+    reset_AEC_if_enabling_or_reference_changed()
+    apply_echo_cancel_setting(requested)
+    stamp_new_blocks(mode_revision, effective_status)
+  render_requested_and_effective_modes()
+\end{lstlisting}
+\end{minipage}\par
+A mode change does not disable the microphone or silently stop event recording. A comparison trial processes the same consented test input under both modes and retains the mode revision with evaluation results. Uncancelled playback can produce false reactions; it is shown as an operating condition rather than hidden by the switch.
+\checkcase{Toggle during playback and overlapping audience sound. Check block labels, the effective-mode display, and behavior when the reference disappears and returns.}
+
+\subsection{Requirement 13: Server Deployment}
+\textit{Input/output:} versioned API/worker images, configuration, and deployment definitions start server-side processing. Compose is the initial AWS runtime. Kubernetes deployability is retained as a deliverable, not deferred away: the same images will have manifests and a documented smoke test on a GPU-capable Kubernetes environment. A single-node GPU Kubernetes trial may reuse the same AWS host after stopping Compose, avoiding concurrent GPU reservations. A paid EKS control plane is not part of the initial demonstration.
+\par\smallskip\noindent\begin{minipage}{\columnwidth}
+\begin{lstlisting}
+build_images_from_locked_dependencies()
+validate_config_checksums_and_paths()
+start_database_and_queue(); wait_until_healthy()
+start_API_and_worker(); load_models_once()
+mark_ready_after_dependencies_and_model()
+run_fixture_through_complete_server_path()
+for target in [Compose, Kubernetes]:
+  verify_event_and_idempotent_retry(target)
+  restart_worker(); verify_records_survive()
+  stop_gracefully(); release_leases_and_payloads()
+\end{lstlisting}
+\end{minipage}\par
+The API/worker are separate services; Redis and PostgreSQL are internal services with persistent storage where required. Kubernetes packaging includes Deployments/Services, configuration and secret references, storage claims, readiness checks, and GPU worker resource requests. GPU scheduling requires a compatible host driver, NVIDIA container runtime integration, and device plugin; the worker requests \code{nvidia.com/gpu: 1}~\cite{k8sgpu,composegpu}. API availability alone does not mean the inference worker is ready.
+
+One worker initially owns the GPU and bounds in-flight windows. Media payloads use leased temporary storage; a retry cannot reference an already expired payload without reporting the gap. Graceful shutdown stops admission, completes or releases in-flight jobs, and preserves committed database state. Secrets are injected at runtime and are absent from images and the repository. The proposed package includes Compose configuration, Kubernetes manifests, an example configuration, model-download/checksum instructions, and a smoke-test fixture. Actual AWS provisioning and Kubernetes test results are implementation-stage evidence, not outcomes claimed in this specification.
+\checkcase{Run the fixture on both deployment targets, retry after worker failure, simulate missing GPU/model/storage, and confirm readiness remains false until processing is possible. Record image digests, target versions, outputs, and restart behavior.}

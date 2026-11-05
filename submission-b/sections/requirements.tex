@@ -1,0 +1,34 @@
+\section{Requirements}
+Saved video means audience footage. The following thirteen requirements define the viewing workflow and server deployment, with corresponding specifications in Section~IV. They are divided by development priority: must-have requirements form the core viewing workflow and sensing controls and are developed first, and good-to-have requirements are developed after the must-have set works end to end.
+
+\subsection{Must-Have Requirements}
+\noindent\textit{Requirement 1: Echo Cancellation:} The system shall use the playback reference to suppress playback sound in microphone audio while retaining audience sound for reaction analysis.
+
+\noindent\textit{Requirement 2: Reaction Recognition:} The system shall classify detected audience sounds into at least laughter, scream, and gasp.
+
+\noindent\textit{Requirement 3: Event Records:} The system shall record each detected reaction with its type, observed intensity, content title, and timecode. Intensity shall describe the observable reaction rather than an inferred internal emotion.
+
+\noindent\textit{Requirement 4: Highlights:} After viewing, the system shall present Tonight's Highlights, prioritizing high-intensity reaction segments and linking any available audience clips for user review.
+
+\noindent\textit{Requirement 5: Camera Activation:} The camera shall be off by default and activated only by explicit user action. No video shall be captured, buffered, or uploaded while it is off.
+
+\noindent\textit{Requirement 6: Camera Indication:} The interface shall show a persistent indicator while the camera is active and provide a control to stop capture.
+
+\noindent\textit{Requirement 7: Review and Deletion:} Users shall be able to review and delete saved reaction clips and their associated media at any time. The interface shall indicate whether a deletion request is pending or completed.
+
+\noindent\textit{Requirement 8: Microphone Control:} Users shall be able to disable microphone-based sensing. This shall stop audio capture, upload, and new audio-triggered detections, with the disabled state shown clearly.
+
+\noindent\textit{Requirement 9: Viewing Interface:} The interface shall display a real-time reaction timeline, the highlight list, and the current sensing and connection status.
+
+\noindent\textit{Requirement 10: Reaction Clips:} With the camera enabled, the system shall save an audience clip for each detected reaction, starting 15~s before and ending 10~s after the trigger. Each time the detection threshold is exceeded again before the clip ends, the clip end shall be extended by 5~s, up to a maximum clip length of 60~s. Missing portions shall be indicated; no footage from before camera activation shall be assumed to exist.
+
+\noindent\textit{Requirement 11: Viewing Sessions:} Users shall be able to start and end sensing sessions. The system shall report connection interruptions, avoid duplicate reaction records after reconnection, and clear unsaved temporary media when a session ends.
+
+
+\subsection{Good-to-Have Requirements}
+The server-side processing in Requirement 13 is already used by the must-have pipeline through Docker Compose; its Kubernetes deployability is the part developed later.
+
+\noindent\textit{Requirement 12: AEC Control:} The system shall provide an option to turn echo cancellation on and off and show the selected mode.
+
+\noindent\textit{Requirement 13: Server Deployment:} The team shall provide server-based AI and computational processing, with the server components deployable on Kubernetes, a platform for managing containerized workloads and services~\cite{kubernetes}.
+
