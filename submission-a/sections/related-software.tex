@@ -1,0 +1,41 @@
+\section{Related Software}
+
+This preliminary review compares existing products, candidate models, datasets, and capture interfaces. It identifies relevant capabilities and unresolved dependencies before model selection and device testing.
+
+\subsection{Existing Capture and Highlight Services}
+
+SteelSeries Moments introduced microphone-triggered clipping for laughter and excited vocal reactions \cite{ref2}, later naming the feature Reaction Clipping \cite{ref3}. This is a close precedent for Encore Moment's event-triggered capture. Twitch Auto Clips describes automatic clip creation through speech recognition and artificial intelligence (AI); its documentation currently presents an invitation-only, English-language alpha \cite{ref4}. Reaction-triggered and automatic clipping are therefore established approaches in gaming and streaming software.
+
+Medal provides event-triggered clipping through integration with a game \cite{ref5}. OBS Studio exposes controls to start, stop, and save a replay buffer \cite{ref6}, making recent-moment capture accessible to recording workflows. These examples inform the relationship between an event and its saved media. Encore Moment's proposed emphasis is the shared TV viewing context: distinguish audience reactions from playback sound, retain the associated scene context, and let participants control their personal recordings.
+
+\subsection{Sound Event Models}
+
+YAMNet, available through Google's Kaggle model page, is a candidate baseline for environmental sound classification \cite{ref7}. Its class vocabulary includes laughter, screaming, and gasp. TensorFlow provides a transfer-learning example that uses YAMNet embeddings for a new classifier \cite{ref8}. This makes it a practical starting point for examining the required categories and nearby confusions such as speech or breathing. The existence of those labels does not establish accuracy for distant or overlapping audience reactions.
+
+The Audio Spectrogram Transformer (AST) checkpoint hosted by MIT on Hugging Face offers an AudioSet-trained comparison and also includes the three target categories \cite{ref9}. Pretrained Audio Neural Networks (PANNs) provide both clip-level tagging and sound-event variants with framewise outputs \cite{ref10}. That distinction matters for the proposed timeline: identifying a sound somewhere in a clip does not necessarily locate its beginning and end. We therefore consider YAMNet and AST as classification candidates and the PANNs sound-event variant as a temporal-detection reference.
+
+Additional candidates address different questions. EfficientAT provides efficient audio-tagging models suitable for later comparison of resource use and recognition quality \cite{ref11}. Microsoft BEATs supplies pretrained audio representations as well as classification checkpoints \cite{ref12}. LAION CLAP relates audio to textual descriptions and can support exploratory zero-shot comparisons \cite{ref13}. These are secondary options rather than simultaneous dependencies; a feature encoder, a class prediction, and an audio-text similarity score are different outputs.
+
+Speech-emotion models require a separate justification. For example, audEERING's dimensional emotion model was trained on English podcast speech and predicts arousal, dominance, and valence; its model card also specifies research-use restrictions \cite{ref14}. That task differs from identifying brief nonverbal reactions. The present proposal therefore focuses on observable sound categories. Classifier confidence, acoustic intensity, and subjective emotional significance will not be treated as interchangeable measures.
+
+\subsection{Datasets and Evaluation Relevance}
+
+FSD50K is a strong data candidate because it provides human-labeled audio, including laughter, screaming, and gasp \cite{ref15}. Its clip-level labels do not directly provide precise reaction boundaries or intensity annotations, and individual sound licenses must be checked. FSDKaggle2019 provides additional curated and noisy audio-tagging data \cite{ref16}. Its official class map includes gasp and screaming but no laughter class \cite{ref17}, so it cannot alone cover all three required reactions.
+
+FSD50K incorporates much of the human-labeled FSDKaggle2019 material \cite{ref15}. The two collections must therefore not be treated as independent training and evaluation sets without checking overlap. VocalSound offers complementary examples of laughter, sighs, coughs, throat clearing, sneezes, and sniffs \cite{ref18}. It is useful for studying confusing human sounds, but does not contain the required gasp and scream categories.
+
+Public recordings can support initial model comparisons, but the intended environment introduces additional questions: whether TV dialogue causes false detections, whether quiet reactions remain detectable, and how simultaneous voices or room reverberation affect results. Later validation should include consented viewing recordings, soundtrack-only cases, and mixed audience/playback sound.
+
+\subsection{Echo Cancellation and Audio Processing}
+
+Acoustic echo cancellation (AEC) is relevant because a classifier can correctly recognize laughter that actually originates from the TV. WebRTC's Audio Processing Module provides playback-reference and microphone processing interfaces relevant to AEC \cite{ref19}. The Microsoft AEC Challenge supplies data, baselines, and evaluation resources for echo research \cite{ref20}. Their use in speech applications does not establish that every nonverbal reaction will be preserved. Suppressing playback and retaining useful audience sound are both requirements, and depend on obtaining suitable input signals.
+
+\subsection{Replay Buffers and Event Recording}
+
+OBS Replay Buffer illustrates saving a recent interval after an interesting event \cite{ref6}. NVIDIA DeepStream Smart Video Record similarly supports event-triggered recording from cached media, including material before the event; its documentation notes keyframe-related limits on the available beginning of a clip \cite{ref21}. GStreamer splitmuxsink provides media-file segmentation and a limit on retained files \cite{ref22}. These are useful references for recent-moment storage, although none determines which audience reaction deserves a highlight. Camera control also limits what can be retained: a pre-event video segment can exist only if the camera was already enabled during that interval.
+
+\subsection{TV and Capture Interfaces}
+
+LG Smart Cam provides camera and microphone hardware for supported LG TVs \cite{ref23}, but device availability does not establish access from an ordinary application. A July 2026 LG developer-forum response states that no public application programming interface (API) retrieves media from a connected camera and that WebRTC access is restricted to contracted partner apps \cite{ref24}. The published webOS Audio API describes volume control rather than access to raw playback audio \cite{ref25}. Access to camera media, microphone audio, playback reference, titles, and timecodes must therefore be verified for the actual device and content source; universal compatibility with streaming applications is not assumed.
+
+ReSpeaker XVF3800 is a development-input candidate with a microphone array and configurable audio processing \cite{ref26}. Its documented desktop-host support is not evidence of webOS compatibility. Such hardware is relevant to preliminary feasibility research, while the final interface choice remains open. Overall, the review supports investigation of the proposed features but identifies TV signal access and reaction-specific validation as conditions that must be resolved before broad compatibility claims.

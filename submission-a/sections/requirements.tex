@@ -1,0 +1,57 @@
+\section{Requirements}
+
+The following requirements define the viewing workflow and sensor controls. EIR identifies external interfaces, FR functions, PR qualitative quality objectives, and NFR privacy or operational constraints. Saved video refers to audience footage. Input-dependent features apply to supported, authorized sources, with unavailable capabilities disclosed to the user.
+
+\subsection{External Interface Requirements}
+
+\textbf{EIR-1 Room audio.} The system shall capture room audio from a supported TV or soundbar microphone. An equivalent development input may support initial testing; its use shall not imply native TV compatibility.
+
+\textbf{EIR-2 Playback reference.} The system shall obtain the playback audio signal as a reference for echo cancellation. When the reference is unavailable, the system shall indicate that echo cancellation is unavailable.
+
+\textbf{EIR-3 Viewing context and connection.} The TV client shall exchange viewing inputs and reaction results with the server, including content title, playback position, and playback-state changes needed to associate reactions with scenes.
+
+\subsection{Functional Requirements}
+
+\textbf{FR-1 Echo cancellation.} The system shall use the playback reference to suppress playback sound in microphone audio while retaining audience sound for reaction analysis.
+
+\textbf{FR-2 Reaction recognition.} The system shall classify detected audience sounds into at least laughter, scream, and gasp.
+
+\textbf{FR-3 Event records.} The system shall record each detected reaction with its type, observed intensity, content title, and timecode. Intensity shall describe the observable reaction rather than an inferred internal emotion.
+
+\textbf{FR-4 Highlights.} After viewing, the system shall present Tonight's Highlights, prioritizing high-intensity reaction segments and linking any available audience clips for user review.
+
+\textbf{FR-5 Camera activation.} The camera shall be off by default and activated only by explicit user action. No video shall be captured, buffered, or uploaded while it is off.
+
+\textbf{FR-6 Camera indication.} The interface shall show a persistent indicator while the camera is active and provide a control to stop capture.
+
+\textbf{FR-7 Review and deletion.} Users shall be able to review and delete saved reaction clips and their associated media at any time. The interface shall indicate whether a deletion request is pending or completed.
+
+\textbf{FR-8 Microphone control.} Users shall be able to disable microphone-based sensing. This shall stop audio capture, upload, and new audio-triggered detections, with the disabled state shown clearly.
+
+\textbf{FR-9 Viewing interface.} The interface shall display a real-time reaction timeline, the highlight list, and the current sensing and connection status.
+
+\textbf{FR-10 AEC control.} The system shall provide an option to turn echo cancellation on and off and show the selected mode.
+
+\textbf{FR-11 Reaction clips.} With the camera enabled, the system shall save audience clips containing available moments before and after a detected reaction. Missing portions shall be indicated; no footage from before camera activation shall be assumed to exist.
+
+\textbf{FR-12 Viewing sessions.} Users shall be able to start and end sensing sessions. The system shall report connection interruptions, avoid duplicate reaction records after reconnection, and clear unsaved temporary media when a session ends.
+
+\subsection{Qualitative Quality Objectives}
+
+\textbf{PR-1 Reaction preservation.} Echo processing shall be developed to reduce playback interference while preserving audience reactions needed for recognition.
+
+\textbf{PR-2 Non-reaction rejection.} The classifier shall handle ordinary speech, household noise, and uncertain sounds so that these are not automatically accepted as audience reactions.
+
+\textbf{PR-3 False-alarm control.} The system shall support comparison of AEC-on and AEC-off detection to identify and reduce reactions falsely attributed to the audience when only the soundtrack is playing.
+
+\textbf{PR-4 Responsive processing.} The system shall support reaction analysis and timeline updates during viewing, with clip saving able to proceed without blocking new detections.
+
+\subsection{Privacy and Operational Constraints}
+
+\textbf{NFR-1 Consent and access.} Users shall be informed of server processing before sensing begins. Camera activation shall require separate permission. Saved media shall be restricted to authorized users, and media transfers shall be authenticated and encrypted.
+
+\textbf{NFR-2 Temporary media.} Continuous media shall be retained only in bounded temporary storage; selected clips and event metadata may be saved. Disabling a sensor shall clear its unsaved queued media.
+
+\textbf{NFR-3 Server deployment.} The team shall provide server-based AI and computational processing, with the server components deployable on Kubernetes, a platform for managing containerized workloads and services \cite{ref27}.
+
+Requirement checks will cover the viewing workflow, reaction records, AEC mode comparison, sensor controls, clip availability, and deletion. Public data and consented room recordings will support qualitative assessment under soundtrack-only, audience-only, and mixed conditions. Numerical performance targets are not specified in this proposal.

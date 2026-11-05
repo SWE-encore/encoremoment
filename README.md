@@ -4,6 +4,16 @@ CSE406 Software Engineering · Group Encore · Hanyang University
 
 Encore Moment is a PC-based audience reaction capture project. A team-controlled player and an AWS inference server support reaction detection, a live timeline, and locally saved audience clips. This repository currently contains project documentation; the specification describes planned behavior.
 
+## Submission A
+
+The revised proposal and requirements document is preserved separately in IEEE LaTeX format (4 pages). It retains the original smart-TV scope, role table, 22 requirements/objectives, and 27 references; Submission B contains the later PC-first specification.
+
+- [Read the Submission A PDF](encore_moment_submission_a.pdf)
+- [Browse the Submission A LaTeX source](submission-a/)
+- [Download the Submission A LaTeX package](encore-moment-submission-a-latex.zip)
+
+Build with `cd submission-a` followed by `latexmk -pdf main.tex`. The source README records the original document used for this transcription.
+
 ## Submission B
 
 Updated 2026-11-06. The current PDF is 9 pages in IEEE conference format.

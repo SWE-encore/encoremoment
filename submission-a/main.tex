@@ -1,0 +1,41 @@
+\documentclass[conference,letterpaper]{IEEEtran}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{cite,graphicx,xurl,microtype}
+\usepackage[hidelinks]{hyperref}
+\title{Encore Moment\\[0.3em]
+{\large Audience Reaction Capture for Smart TVs}\\[0.4em]
+{\normalsize Group Encore}}
+\author{
+\IEEEauthorblockN{Chul Park}
+\IEEEauthorblockA{Department of\\Information Systems\\
+Hanyang University\\Seoul, Republic of Korea\\parkchul1@hanyang.ac.kr}
+\and
+\IEEEauthorblockN{Pavel Kim}
+\IEEEauthorblockA{Department of\\Information Systems\\
+Hanyang University\\Seoul, Republic of Korea\\skydish@hanyang.ac.kr}
+\and
+\IEEEauthorblockN{Soyeon Seol}
+\IEEEauthorblockA{Department of\\Information Systems\\
+Hanyang University\\Seoul, Republic of Korea\\ssy050915@hanyang.ac.kr}
+\and
+\IEEEauthorblockN{Yujeong Heo}
+\IEEEauthorblockA{Department of\\Information Systems\\
+Hanyang University\\Seoul, Republic of Korea\\gjdbwjd03@hanyang.ac.kr}}
+\hypersetup{pdftitle={Encore Moment - Submission A: Proposal and Requirements},
+pdfauthor={Group Encore},pdfsubject={CSE406 Software Engineering - Submission A}}
+\begin{document}
+\maketitle
+\begin{abstract}
+Encore Moment is a proposed smart TV service for preserving spontaneous audience reactions as personal viewing memories. Friends, couples, families, party guests, and streamers may wish to revisit a shared laugh or surprise without interrupting the experience to record it. The service will recognize laughter, screams, and gasps, associate them with content titles and timecodes, and offer a live timeline and post-viewing highlights. Optional audience video will remain under explicit user control. This proposal defines stakeholder needs, reviews relevant models, datasets and capture software, and presents team responsibilities and requirements. The scope includes server-based analysis and Kubernetes deployment, subject to verification of the required TV interfaces.
+\end{abstract}
+\begin{IEEEkeywords}
+smart TV, audience reactions, shared viewing, sound event detection, reaction clips, requirements analysis
+\end{IEEEkeywords}
+\input{sections/introduction}
+\input{sections/related-software}
+\input{sections/team-responsibilities}
+\input{sections/requirements}
+\IEEEtriggeratref{4}
+\input{references}
+\end{document}
