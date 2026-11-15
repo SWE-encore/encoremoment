@@ -1,0 +1,245 @@
+{
+  "name": "01_single_event",
+  "title": "Single reaction",
+  "description": "One laughter event goes OPEN -> UPDATE -> FINAL with the camera on. Expect one event and one 25 s clip [t0-15s, t0+10s].",
+  "session_id": "ses-sample-01",
+  "messages": [
+    {
+      "dir": "pc->server",
+      "msg": {
+        "schema": "encore.v1",
+        "kind": "control_update",
+        "capture_ms": 100000,
+        "idempotency_key": "ctl-microphone-1",
+        "sensor": "microphone",
+        "enabled": true,
+        "generation": 1,
+        "session_id": "ses-sample-01",
+        "seq": 0
+      }
+    },
+    {
+      "dir": "server->pc",
+      "msg": {
+        "schema": "encore.v1",
+        "kind": "control_ack",
+        "idempotency_key": "ctl-microphone-1",
+        "sensor": "microphone",
+        "generation": 1,
+        "status": "applied",
+        "session_id": "ses-sample-01"
+      }
+    },
+    {
+      "dir": "pc->server",
+      "msg": {
+        "schema": "encore.v1",
+        "kind": "playback_anchor",
+        "capture_ms": 100500,
+        "playback": {
+          "epoch": 1,
+          "content_id": "sample-movie-01",
+          "title": "Sample Movie",
+          "position_ms": 0,
+          "rate": 1.0,
+          "state": "playing"
+        },
+        "session_id": "ses-sample-01",
+        "seq": 1
+      }
+    },
+    {
+      "dir": "pc->server",
+      "msg": {
+        "schema": "encore.v1",
+        "kind": "control_update",
+        "capture_ms": 101000,
+        "idempotency_key": "ctl-camera-1",
+        "sensor": "camera",
+        "enabled": true,
+        "generation": 1,
+        "session_id": "ses-sample-01",
+        "seq": 2
+      }
+    },
+    {
+      "dir": "server->pc",
+      "msg": {
+        "schema": "encore.v1",
+        "kind": "control_ack",
+        "idempotency_key": "ctl-camera-1",
+        "sensor": "camera",
+        "generation": 1,
+        "status": "applied",
+        "session_id": "ses-sample-01"
+      }
+    },
+    {
+      "dir": "server->pc",
+      "msg": {
+        "schema": "encore.v1",
+        "kind": "event_update",
+        "cursor": 1,
+        "event": {
+          "event_id": "evt-0001",
+          "revision": 1,
+          "phase": "OPEN",
+          "reaction": {
+            "type": "laughter",
+            "confidence": 0.91
+          },
+          "intensity": {
+            "combined": 0.62,
+            "audio": 0.62,
+            "visual": null
+          },
+          "capture": {
+            "triggers_ms": [
+              130000
+            ],
+            "start_ms": 129400,
+            "end_ms": null
+          },
+          "generations": {
+            "microphone": 1,
+            "camera": 1
+          },
+          "playback": {
+            "status": "mapped",
+            "epoch": 1,
+            "content_id": "sample-movie-01",
+            "title": "Sample Movie",
+            "timecode_start_ms": 28900,
+            "timecode_end_ms": null
+          },
+          "source": {
+            "model": "sample-fixture",
+            "config": "sample-1",
+            "aec": "uncancelled"
+          }
+        },
+        "session_id": "ses-sample-01"
+      }
+    },
+    {
+      "dir": "server->pc",
+      "msg": {
+        "schema": "encore.v1",
+        "kind": "event_update",
+        "cursor": 2,
+        "event": {
+          "event_id": "evt-0001",
+          "revision": 2,
+          "phase": "UPDATE",
+          "reaction": {
+            "type": "laughter",
+            "confidence": 0.93
+          },
+          "intensity": {
+            "combined": 0.74,
+            "audio": 0.74,
+            "visual": null
+          },
+          "capture": {
+            "triggers_ms": [
+              130000
+            ],
+            "start_ms": 129400,
+            "end_ms": null
+          },
+          "generations": {
+            "microphone": 1,
+            "camera": 1
+          },
+          "playback": {
+            "status": "mapped",
+            "epoch": 1,
+            "content_id": "sample-movie-01",
+            "title": "Sample Movie",
+            "timecode_start_ms": 28900,
+            "timecode_end_ms": null
+          },
+          "source": {
+            "model": "sample-fixture",
+            "config": "sample-1",
+            "aec": "uncancelled"
+          }
+        },
+        "session_id": "ses-sample-01"
+      }
+    },
+    {
+      "dir": "server->pc",
+      "msg": {
+        "schema": "encore.v1",
+        "kind": "event_update",
+        "cursor": 3,
+        "event": {
+          "event_id": "evt-0001",
+          "revision": 3,
+          "phase": "FINAL",
+          "reaction": {
+            "type": "laughter",
+            "confidence": 0.93
+          },
+          "intensity": {
+            "combined": 0.74,
+            "audio": 0.74,
+            "visual": null
+          },
+          "capture": {
+            "triggers_ms": [
+              130000
+            ],
+            "start_ms": 129400,
+            "end_ms": 133200
+          },
+          "generations": {
+            "microphone": 1,
+            "camera": 1
+          },
+          "playback": {
+            "status": "mapped",
+            "epoch": 1,
+            "content_id": "sample-movie-01",
+            "title": "Sample Movie",
+            "timecode_start_ms": 28900,
+            "timecode_end_ms": 32700
+          },
+          "source": {
+            "model": "sample-fixture",
+            "config": "sample-1",
+            "aec": "uncancelled"
+          }
+        },
+        "session_id": "ses-sample-01"
+      }
+    }
+  ],
+  "expected": {
+    "ignored": {},
+    "rejected": {},
+    "unapplied_cursors": [],
+    "events": {
+      "evt-0001": {
+        "phase": "FINAL",
+        "revision": 3,
+        "type": "laughter"
+      }
+    },
+    "clips": [
+      {
+        "event_id": "evt-0001",
+        "index": 0,
+        "window_ms": [
+          115000,
+          140000
+        ],
+        "linked_to": null,
+        "expected_status": "ready",
+        "reason": null,
+        "missing_ms": []
+      }
+    ]
+  }
+}

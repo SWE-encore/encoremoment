@@ -36,3 +36,7 @@ latexmk -pdf main.tex
 Alternatively, upload the complete ZIP to Overleaf and select `submission-b/main.tex` as the main document. The package includes the IEEEtran class/style, bibliography, and all three PDF figures/tables.
 
 GitHub publication is separate from the course LMS submission and printed copy.
+
+## Contracts
+
+The message format between the PC client and the server is in [`contracts/`](contracts/): the JSON Schema, six sample scenarios with expected results, and a reference receiver. Run `python -m unittest discover -s contracts/tests` after installing `contracts/requirements-dev.txt`.
