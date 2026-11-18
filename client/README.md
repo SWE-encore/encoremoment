@@ -1,21 +1,21 @@
 # PC client integration
 
-공통 실행 및 협업 기준은 [루트 README](../README.md), 현재 계층 경계는 [구조 문서](../docs/architecture.md)를 참고하세요.
+See the [root README](../README.md) for the common entry point and team workflow, and the [architecture document](../docs/architecture.md) for the current component boundaries.
 
-- 일반 실행: `python -m encore_client` (이 폴더에서 실행)
-- 내장 데모 서버 + 통합 UI: `python -m encore_client --demo`
-- Windows UI 개발: `python -m encore_client --demo --no-player`
-- 자동 전달 확인: `python -m encore_client --demo --headless`
-- 통합 테스트: 저장소 루트에서 `python -m pytest -q`
+- Normal launch: `python -m encore_client` (run from this folder)
+- Built-in demo server and integrated UI: `python -m encore_client --demo`
+- Windows UI development: `python -m encore_client --demo --no-player`
+- Automated delivery check: `python -m encore_client --demo --headless`
+- Integration tests: `python -m pytest -q` from the repository root
 
-`ui_main.py`와 `python -m encore_client.session`은 공통 진입점의 별칭입니다.
-아래 문서는 기존 플레이어/EM-23 구현의 상세 참고 기록입니다. 예전 테스트 통과 횟수는 당시 기록이며 최신 통합 검증 결과는 PR을 확인하세요.
+`ui_main.py` and `python -m encore_client.session` are aliases for the common entry point.
+The documentation below preserves implementation details for the player and EM-23. Earlier test counts describe their original validation; consult the PR for the latest integration results.
 
 # PC client
 
 The Encore Moment PC client (Python, PySide6, GStreamer). It currently contains the **controlled player**: the base that the session, sensing and clip features build on.
 
-> **요약 (한국어)** — 로컬 영상을 재생하는 플레이어입니다. 재생·일시정지·탐색·배속을 지원하고, 재생 상태가 바뀔 때마다 계약(`contracts/`)의 `playback_anchor` 메시지를 만들어 반응 시각을 콘텐츠 타임코드로 바꿀 수 있게 합니다. 오디오는 48 kHz로 `webrtcechoprobe`를 거치도록 되어 있어 이후 같은 파이프라인에 에코 제거(R1)를 붙일 수 있습니다.
+> **Summary** — The player supports local video playback, pause, seek, and speed changes. Playback changes produce contract (`contracts/`) `playback_anchor` messages that map reaction capture times to content timecodes. Audio is routed at 48 kHz through `webrtcechoprobe`, allowing echo cancellation (R1) to be added to the same pipeline later.
 
 ## What the player does
 
@@ -49,7 +49,7 @@ Options: `--title` (reported title, default file name), `--session-id`, `--autop
 
 ## Session and result delivery (EM-23)
 
-> **요약 (한국어)** — 세션을 시작·종료하고, 서버가 보낸 반응 이벤트를 PC 화면에 띄웁니다. 받은 메시지는 `contracts/`의 참조 수신기 규칙으로 처리하므로 같은 결과가 두 번 와도 이벤트는 하나만 남습니다. 연결이 끊기면 빨간 "Disconnected"와 이유를 보여 줍니다. 실제 서버(EM-3) 전에는 `fake_server`가 계약 샘플을 보내 줍니다. 실행 절차와 재현 기록: [docs/em-23-delivery.md](docs/em-23-delivery.md).
+> **Summary** — Start and end sessions and display reaction events delivered by the server. Messages follow the reference receiver rules in `contracts/`, so duplicate results leave a single event. A dropped connection shows a red "Disconnected" status and its reason. Until the real server (EM-3) exists, `fake_server` sends the contract fixtures. Run instructions and reproduction records: [docs/em-23-delivery.md](docs/em-23-delivery.md).
 
 - **Session.** Start opens the result stream `ws://<server>/v1/sessions/<session_id>/stream` and sends the player's newest playback anchor (title and time basis) as soon as it opens; later anchors follow while connected. End closes the stream.
 - **Delivery.** Every server message goes through `contracts/reference/encore_contract.py` (loaded, not copied): cursor order, one event per `event_id`, newer revisions only, stale generations refused.

@@ -2,7 +2,7 @@
 
 Jira: [EM-1](https://hanyang-team-ldzgset2.atlassian.net/browse/EM-1) · Spec: [Submission B §IV](../submission-b/sections/specifications.tex) · Status: **draft, needs review from PC, AI and server owners**
 
-> **요약 (한국어)** — PC와 서버가 주고받는 반응 이벤트·센서 제어 메시지 형식입니다. 스키마는 `schema/`, 실행 가능한 샘플 6개는 `samples/`, PC 수신 규칙의 참조 구현은 `reference/`에 있습니다. EM-23(세션·이벤트 전달), EM-2(클립 저장), EM-24(UI)는 이 샘플로 개발·테스트할 수 있습니다. 아래 "검토가 필요한 결정"에 의견을 남겨 주세요.
+> **Summary** — This contract defines reaction event and sensor control messages exchanged between the PC and server. The schema is in `schema/`, six executable fixtures are in `samples/`, and the reference implementation of the PC receiver rules is in `reference/`. EM-23 (session/event delivery), EM-2 (clip storage), and EM-24 (UI) can use these fixtures for development and testing. Please review the "Decisions that need review" section below.
 
 ## What is in this folder
 
