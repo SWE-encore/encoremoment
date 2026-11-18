@@ -1,0 +1,4 @@
+# PyGObject (gi) and GStreamer come from the system packages; see client/README.md.
+PySide6==6.8.3
+# Used by the anchor test to validate against contracts/schema.
+jsonschema>=4.18,<5

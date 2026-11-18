@@ -2,7 +2,148 @@
 
 CSE406 Software Engineering · Group Encore · Hanyang University
 
-Encore Moment is a PC-based audience reaction capture project. A team-controlled player and an AWS inference server support reaction detection, a live timeline, and locally saved audience clips. This repository currently contains project documentation; the specification describes planned behavior.
+This repository brings controlled video playback, audience reaction event delivery, and local clip review into one PC application.
+**The current integration build uses contract fixtures. Real audience video capture, microphone capture, AI inference, and clip generation are not connected yet.**
+Submission B defines the current PC-first design; Submission A preserves the earlier smart-TV scope.
+
+## Quick start
+
+Run commands from the repository root unless noted otherwise. The full player targets **Ubuntu 24.04 / Python 3.12 / PySide6 6.8.3 / GStreamer 1.24**.
+
+```bash
+sudo apt update
+sudo apt install python3-venv python3-gi gir1.2-gstreamer-1.0 \
+  gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad gstreamer1.0-libav ffmpeg libegl1 libopengl0 libxcb-cursor0
+python3 -m venv --system-site-packages .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m pytest -q
+cd client
+../.venv/bin/python -m encore_client --demo
+```
+
+Use **Open video** to open the original content, then click **Start session**.
+`--demo` automatically starts a local fake server and replays the duplicate-delivery fixture.
+The event table retains one `evt-0004` row; it also appears in Highlights when its phase becomes FINAL.
+The Saved clips tab reads a separate sample index. These sample clips are not recordings of the live events.
+End preserves the current records. Restart the app to create another session; starting a new session in the same window is future work.
+
+To generate and open a test video, run from the repository root:
+
+```bash
+bash client/tools/make_test_video.sh client/samples/test-movie.mp4 30
+cd client
+../.venv/bin/python -m encore_client samples/test-movie.mp4 --demo
+```
+
+Windows supports contract and UI development mode. Validate the full GStreamer player on Ubuntu.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python -m pytest -q
+cd client
+..\.venv\Scripts\python -m encore_client --demo --no-player
+```
+
+To check contract delivery without a window, run `python -m encore_client --demo --headless` from `client/`, using the virtual environment's Python.
+Select another fixture with `--scenario ../contracts/samples/05_camera_off.json`.
+`--scenario` alone connects to an external fake server; adding `--demo` starts the built-in fake server.
+For a real server, use `--server wss://host`. The proposed stream path is `/v1/sessions/<session_id>/stream` and must be agreed with the server implementation.
+In normal mode, Start becomes available after the video's first playback anchor is ready.
+Use `--clip-index /path/index.json` to select a saved clip index.
+The default is `artifacts/clip_index.json` in normal mode and `samples/clip_index.json` in demo mode.
+
+## Repository layout and responsibilities
+
+```text
+contracts/                  Shared PC/server message contract, fixtures, reference receiver, tests
+client/
+  encore_client/
+    __main__.py             Common entry point and demo server lifecycle
+    player/                 GStreamer content playback, position, epochs, and anchors
+    session/                WebSocket, session state, delivery/deduplication, fake_server
+    clips/                  Saved clip index model, list, and local preview
+    sensing/                Camera state model; real device adapters are future work
+    ui/                     Integrated workspace, Highlights, shared display helpers
+  tests/                    Unit, delivery, UI, and real media tests
+  tools/                    Test video generation
+  docs/                     Existing EM-23 delivery validation records
+samples/                    Synthetic videos and sample index for the clip UI
+scripts/                    Sample regeneration tools
+submission-a/, submission-b/ Original submissions: design and requirements sources
+docs/                       Current architecture and integration decisions
+.github/                    PR template and Ubuntu CI
+artifacts/                  Local run outputs, excluded from version control
+```
+
+See [architecture.md](docs/architecture.md) for the current data flow and boundaries for future work.
+`server/`, `inference/`, and `deploy/` are planned components required by the design, **not implemented services**.
+This integration does not add empty service skeletons or invent new APIs.
+
+## Current behavior and remaining work
+
+| Component | Current behavior | Remaining work |
+|---|---|---|
+| Contract | encore.v1 schema, six fixtures, delivery ordering, deduplication, generation handling | Media upload contract and review of draft decisions |
+| Content player | Open, play/pause, seek, speed, anchors | Real AEC/sensor pipeline integration and output latency correction |
+| Session | WebSocket connection, event delivery, disconnect indication, logs | Real server session API, reconnection, resend, persistence (EM-20) |
+| UI | Received event timeline, FINAL events ranked by intensity in Highlights, saved clip review | Event-to-exported-clip links, deletion, new sessions in the same window |
+| Sensing state | Camera/microphone capture shown as Off and unavailable; camera state model retained | Device callbacks and control contract integration |
+| Clips | Playback offered only for ready/partial entries with a real, nonempty file | EM-2 buffering, FFmpeg generation/verification, SQLite index |
+| Server/AI | fake_server replays fixtures only | Real API/worker/Redis/PostgreSQL, inference, deployment |
+
+A `ready` index entry assumes that export has already validated the file. The UI's existence and size checks alone do not guarantee successful decoding.
+When the GStreamer echo probe is missing, the player reports it as unavailable. This must not be interpreted as completed AEC support.
+The design document's PANNs choice still differs from the YAMNet decision recorded in the contract README. This integration does not choose a model on the team's behalf.
+
+## Team workflow
+
+**Use main as the shared baseline, short-lived feature branches for work, and main as the PR base.**
+Do not create a branch for every file edit. A reviewable task can contain multiple commits, with review fixes added to the same branch.
+Official documents and READMEs are written in English. Team discussions, PR descriptions, and review comments are written in Korean.
+
+```bash
+git switch main
+git pull --ff-only origin main
+git switch -c feat/EM-number-short-description
+# After editing, run tests from the repository root
+python -m pytest -q
+git add <changed-files>
+git commit -m "EM-number: purpose of the change"
+git push -u origin feat/EM-number-short-description
+# Open a PR on GitHub with base: main
+```
+
+- Record the owner, requirement number (R-number), acceptance criteria, and reviewer in the Jira EM ticket/issue. Default to one active implementation task per person.
+- Do not append new work to `player/minimal-player` or `em-1/event-contract`. After the integration PR merges, create new branches from the latest main.
+- Merge a small prerequisite contract/interface into main first. If dependent PRs are unavoidable, document their bases and merge order, then **explicitly check/change the base to main** after the prerequisite merges.
+- If main changes during development, run `git fetch origin`, then `git merge origin/main` on the work branch. Resolve conflicts and rerun tests. Avoid force-pushing shared branches.
+- Explain the change, how to run it, test results, and unimplemented features in the PR. Merge after one teammate reviews it and `Client integration` passes. Device/GPU features also require evidence from the corresponding hardware.
+- Squash and merge ordinary task PRs, then delete their branches. **For this initial integration PR, use Create a merge commit to preserve the original branch histories.** Delete the old branches only after confirming the integration.
+- A repository administrator configures main protection (one reviewer, required CI, restricted force pushes) and automatic branch deletion after merge. This document does not change GitHub settings automatically.
+- Add feature code to the relevant package; do not create another standalone app or duplicate Session state. Update the schema, fixture, receiver, and consuming code in the same PR when changing the contract.
+- Keep fixtures/fake servers distinct from real features. Passing model tests does not establish that real capture or inference is complete.
+
+The following boundaries follow the roles in the design document; changes require team agreement:
+
+| Owner | Primary scope | Shared review areas |
+|---|---|---|
+| Soyeon Seol | UI, Highlights, clip review | Session and actual device state display |
+| Pavel Kim | Server sessions, records, result stream | contracts and session integration |
+| Yujeong Heo | AEC, audio inference, intensity evaluation | Player audio reference and input/result contracts |
+| Chul Park | Media buffering, transport, deployment, integration | clips, sensing, common entry point, CI |
+
+The design document does not yet assign facial analysis to an owner. Assign an owner in the ticket before implementation.
+
+## Validation
+
+`python -m pytest -q` collects both the unittest-based contract/session tests and pytest-based clip tests.
+Windows may skip eight GStreamer-related tests. Ubuntu CI first checks the real media dependencies, then runs the player tests as well.
+GUI tests run offscreen and do not replace validation with real speakers, cameras, or microphones.
+Regenerate sample videos with `python scripts/make_samples.py` from the root (FFmpeg required).
+
+## Submission documents
 
 ## Submission A
 
@@ -36,7 +177,3 @@ latexmk -pdf main.tex
 Alternatively, upload the complete ZIP to Overleaf and select `submission-b/main.tex` as the main document. The package includes the IEEEtran class/style, bibliography, and all three PDF figures/tables.
 
 GitHub publication is separate from the course LMS submission and printed copy.
-
-## Contracts
-
-The message format between the PC client and the server is in [`contracts/`](contracts/): the JSON Schema, six sample scenarios with expected results, and a reference receiver. Run `python -m unittest discover -s contracts/tests` after installing `contracts/requirements-dev.txt`.

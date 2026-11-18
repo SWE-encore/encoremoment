@@ -1,2 +1,8 @@
 __pycache__/
 *.pyc
+.venv/
+client/samples/
+*.jsonl
+.pytest_cache/
+.venv-linux/
+artifacts/

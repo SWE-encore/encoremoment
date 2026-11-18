@@ -1,0 +1,41 @@
+name: Client integration
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: client-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  ubuntu-client:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system media dependencies
+        timeout-minutes: 10
+        run: |
+          # Avoid the slow regional mirror selected by some hosted runners.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt > /dev/null
+          fi
+          sudo apt-get update
+          sudo apt-get install -y python3-venv python3-gi gir1.2-gstreamer-1.0 \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad gstreamer1.0-libav ffmpeg libegl1 libopengl0 libxcb-cursor0
+      - name: Install Python dependencies
+        run: |
+          /usr/bin/python3 -m venv --system-site-packages .venv
+          .venv/bin/python -m pip install -r requirements-dev.txt
+      - name: Require the real media backend
+        run: |
+          .venv/bin/python -c "import gi; gi.require_version('Gst', '1.0'); from gi.repository import Gst; Gst.init(None); print(Gst.version_string())"
+          .venv/bin/python -c "from PySide6.QtMultimedia import QMediaPlayer"
+          ffmpeg -version
+      - name: Contract, session, clip, UI and media tests
+        run: .venv/bin/python -m pytest -q -rs
