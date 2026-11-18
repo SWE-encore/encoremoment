@@ -1,6 +1,6 @@
 # Event and control message contract (`encore.v1`)
 
-Jira: [EM-1](https://hanyang-team-ldzgset2.atlassian.net/browse/EM-1) · Spec: [Submission B §IV](../submission-b/sections/specifications.tex) · Status: **draft, needs review from PC, AI and server owners**
+Jira: [EM-1](https://hanyang-team-ldzgset2.atlassian.net/browse/EM-1) · Spec: [Submission B §IV](../documents/submission-b/sections/specifications.tex) · Status: **draft, needs review from PC, AI and server owners**
 
 > **Summary** — This contract defines reaction event and sensor control messages exchanged between the PC and server. The schema is in `schema/`, six executable fixtures are in `samples/`, and the reference implementation of the PC receiver rules is in `reference/`. EM-23 (session/event delivery), EM-2 (clip storage), and EM-24 (UI) can use these fixtures for development and testing. Please review the "Decisions that need review" section below.
 
