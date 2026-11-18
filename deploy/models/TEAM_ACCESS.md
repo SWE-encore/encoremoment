@@ -51,6 +51,41 @@ Current provisioning status:
 - `FeGigabyte`: requested for the second Ubuntu laptop; awaiting its public key.
 - Other members: awaiting public keys and Tailscale invitations.
 
+### Handoff: 2026-11-19 KST
+
+The initial school-account login selected an unfamiliar tailnet. The server was
+explicitly logged out of that network. Do not request approval there. The owner
+has since signed into the Tailscale admin console with a personal account.
+At this checkpoint the server still reports `Logged out` / `NeedsLogin`.
+No working team VPN address has been verified; the address assigned during
+the earlier enrollment must not be used as the project endpoint.
+
+The second Ubuntu laptop has Tailscale installed (reported by the owner), but
+its login and server connectivity have not been verified. `FeGigabyte` has not
+yet been created because that laptop's public key has not been received.
+
+Resume in this order:
+
+1. Administrator: run `sudo tailscale up --hostname=encoremoment-dev
+   --accept-routes=false` on EC2 and complete registration in the personal
+   account's intended tailnet. Generate a fresh login link if needed; never
+   commit or post device-authentication links in the team channel.
+2. Ubuntu laptop: run `sudo tailscale up --hostname=fegigabyte-laptop`, open
+   its own login link, and select the same personal account/tailnet.
+3. Verify `tailscale status` on both devices, the server's `tailscale ip -4`,
+   and any device approvals/access policy in the owner's admin console.
+4. Receive the Ubuntu laptop's Ed25519 public key and enroll `FeGigabyte`.
+   Test SSH and both model runners from that laptop through the VPN.
+5. Invite teammates individually, review the tailnet access policy, enroll
+   each device's public key, and verify their individual SSH connections.
+6. Update this guide with the verified VPN endpoint. Proceed to media contracts,
+   receiver API, reaction rules and PC client integration as separate work.
+
+The EC2 instance remains running at this checkpoint; no stop, termination, or
+public SSH firewall expansion was performed. Model installation and normal
+administrator SSH remain available. The previous credit estimate is a snapshot,
+not a refreshed balance.
+
 On the Ubuntu laptop, generate its own key with comment `FeGigabyte-ubuntu`.
 After enrollment, use `ssh -i ~/.ssh/encoremoment FeGigabyte@TAILSCALE_IP`.
 
