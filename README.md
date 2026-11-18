@@ -71,7 +71,7 @@ client/
   docs/                     Existing EM-23 delivery validation records
 samples/                    Synthetic videos and sample index for the clip UI
 scripts/                    Sample regeneration tools
-submission-a/, submission-b/ Original submissions: design and requirements sources
+documents/                  Submission sources, PDFs, and source archives
 docs/                       Current architecture and integration decisions
 .github/                    PR template and Ubuntu CI
 artifacts/                  Local run outputs, excluded from version control
@@ -145,23 +145,25 @@ Regenerate sample videos with `python scripts/make_samples.py` from the root (FF
 
 ## Submission documents
 
+All submission assets are indexed in [documents/](documents/README.md). The published PDFs and ZIPs remain historical copies; current source edits are tracked separately.
+
 ## Submission A
 
 The revised proposal and requirements document is preserved separately in IEEE LaTeX format (4 pages). It retains the original smart-TV scope, role table, 22 requirements/objectives, and 27 references; Submission B contains the later PC-first specification.
 
-- [Read the Submission A PDF](encore_moment_submission_a.pdf)
-- [Browse the Submission A LaTeX source](submission-a/)
-- [Download the Submission A LaTeX package](encore-moment-submission-a-latex.zip)
+- [Read the Submission A PDF](documents/encore_moment_submission_a.pdf)
+- [Browse the Submission A LaTeX source](documents/submission-a/)
+- [Download the Submission A LaTeX package](documents/encore-moment-submission-a-latex.zip)
 
-Build with `cd submission-a` followed by `latexmk -pdf main.tex`. The source README records the original document used for this transcription.
+Build with `cd documents/submission-a` followed by `latexmk -pdf main.tex`. The source README records the original document used for this transcription.
 
 ## Submission B
 
 Updated 2026-11-06. The current PDF is 9 pages in IEEE conference format.
 
-- [Read the PDF](encore_moment_submission_b_.pdf)
-- [Browse the LaTeX source](submission-b/)
-- [Download the complete LaTeX package](encore-moment-submission-b-latex.zip)
+- [Read the PDF](documents/encore_moment_submission_b_.pdf)
+- [Browse the LaTeX source](documents/submission-b/)
+- [Download the complete LaTeX package](documents/encore-moment-submission-b-latex.zip)
 
 The Introduction contains Motivation, User and Client Needs, Related Software, and Team Responsibilities and Roles, including the original role-assignment table adapted to the PC client. Sections II–IV preserve the supplied revised B: Requirements, Development Environment, and Specifications. Requirements 1–11 are Must-Have, and 12–13 are Good-to-Have.
 
@@ -170,7 +172,7 @@ The Introduction contains Motivation, User and Client Needs, Related Software, a
 With a LaTeX distribution and `latexmk` installed:
 
 ```sh
-cd submission-b
+cd documents/submission-b
 latexmk -pdf main.tex
 ```
 

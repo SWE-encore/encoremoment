@@ -3,7 +3,7 @@
 ## Sources and scope
 
 - Submission A preserves the earlier smart-TV scope; Submission B defines the current PC-first design.
-- The integration follows the [environment and responsibilities](../submission-b/sections/environment.tex), [R1–R13 requirements](../submission-b/sections/requirements.tex), and [detailed specifications](../submission-b/sections/specifications.tex).
+- The integration follows the [environment and responsibilities](../documents/submission-b/sections/environment.tex), [R1–R13 requirements](../documents/submission-b/sections/requirements.tex), and [detailed specifications](../documents/submission-b/sections/specifications.tex).
 - The contract README remains a draft with unresolved decisions. Planned behavior in a design document is not evidence that the implementation is complete.
 - This work combines PR #1 (contract), #2 (player), #3 (session), and the clip UI branch into one application. It does not implement a new server or AI service.
 

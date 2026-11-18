@@ -2,7 +2,7 @@
 
 Prepared 2026-11-06 from the user-supplied revised Submission A ODT and Submission B PDF.
 
-Compile `main.tex` with pdfLaTeX and BibTeX, or run `latexmk -pdf main.tex`. The official IEEEtran conference class and BibTeX style are included. Upload this entire `submission-b` folder to Overleaf.
+From the repository root, run `cd documents/submission-b`. Compile `main.tex` with pdfLaTeX and BibTeX, or run `latexmk -pdf main.tex`. The official IEEEtran conference class and BibTeX style are included. Upload this entire `submission-b` folder to Overleaf.
 
 Section I has four subsections: Motivation; User and Client Needs; Related Software; Team Responsibilities and Roles. Sections II–IV reproduce the supplied revised B, including the must-have/good-to-have split, revised requirement numbering, clip timing, pseudocode, and verification cases. The headings Development Environment and Specifications are retained from B.
 

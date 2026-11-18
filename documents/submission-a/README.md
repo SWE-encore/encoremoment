@@ -4,7 +4,7 @@ This is an IEEE LaTeX transcription of the revised Submission A document supplie
 
 ## Build
 
-Run `latexmk -pdf main.tex` from this folder, or upload the complete source package to Overleaf and select `submission-a/main.tex`. The official IEEEtran class and the vector role-table asset are included. The references are in `references.tex`; BibTeX is not required.
+From the repository root, run `cd documents/submission-a`, then `latexmk -pdf main.tex`, or upload the complete source package to Overleaf and select `submission-a/main.tex`. The official IEEEtran class and the vector role-table asset are included. The references are in `references.tex`; BibTeX is not required.
 
 ## Source and transcription
 
