@@ -11,7 +11,7 @@ The Encore Moment PC client (Python, PySide6, GStreamer). It currently contains 
 - **Epochs** follow the contract: a new epoch on every seek and every new file; pause, resume and speed change keep the epoch. `AnchorTracker.map_time(capture_ms)` turns any capture time into `(epoch, content timecode)`, or `None` if no anchor existed yet (contract status `pending`).
 - Routes audio through `volume ! webrtcechoprobe` at 48 kHz in the same top-level pipeline, so the microphone branch with `webrtcdsp` can be added there later (Submission B, R1). If the probe plugin is missing the player still plays and the status bar says the echo reference is unavailable.
 
-Not included yet: session start/end, sending anchors to the server (EM-23), camera/microphone capture, playlists or subtitles.
+Session start/end and result delivery are in `encore_client/session/` (EM-23, see below). Not included yet: camera/microphone capture, reconnect and replay (EM-20), playlists or subtitles.
 
 ## Setup (Ubuntu 24.04)
 
@@ -34,6 +34,29 @@ tools/make_test_video.sh samples/test-movie.mp4 30   # clip with an on-screen cl
 
 Options: `--title` (reported title, default file name), `--session-id`, `--autoplay`, `--audio-sink "fakesink sync=true"` (no sound device).
 
+## Session and result delivery (EM-23)
+
+> **요약 (한국어)** — 세션을 시작·종료하고, 서버가 보낸 반응 이벤트를 PC 화면에 띄웁니다. 받은 메시지는 `contracts/`의 참조 수신기 규칙으로 처리하므로 같은 결과가 두 번 와도 이벤트는 하나만 남습니다. 연결이 끊기면 빨간 "Disconnected"와 이유를 보여 줍니다. 실제 서버(EM-3) 전에는 `fake_server`가 계약 샘플을 보내 줍니다. 실행 절차와 재현 기록: [docs/em-23-delivery.md](docs/em-23-delivery.md).
+
+- **Session.** Start opens the result stream `ws://<server>/v1/sessions/<session_id>/stream` and sends the player's newest playback anchor (title and time basis) as soon as it opens; later anchors follow while connected. End closes the stream.
+- **Delivery.** Every server message goes through `contracts/reference/encore_contract.py` (loaded, not copied): cursor order, one event per `event_id`, newer revisions only, stale generations refused.
+- **Connection status.** Not started → Connecting → Connected → Disconnected (with the reason) or Session ended. A peer that answers nothing for 15 s counts as dropped. While disconnected, results are greyed out as possibly stale and outgoing messages are kept in `unsent`; resending them and replaying results is EM-20.
+- **Delivery log.** `--log FILE` writes every step (start, open, in, out, unsent, closed, end) as JSON Lines.
+- **WebSocket.** `session/ws.py` is a small standard-library RFC 6455 implementation (text frames, ping/pong, close, `wss://`), so nothing new needs installing.
+
+```sh
+cd client
+# terminal 1: the fake server plays the server side of a sample
+../.venv/bin/python -m encore_client.session.fake_server ../contracts/samples/04_duplicate_delivery.json
+# terminal 2: player + session panel, playing the PC side of the same sample
+../.venv/bin/python -m encore_client.session samples/test-movie.mp4 \
+    --scenario ../contracts/samples/04_duplicate_delivery.json --log delivery.jsonl
+# or without a window
+../.venv/bin/python -m encore_client.session --scenario ../contracts/samples/04_duplicate_delivery.json --headless
+```
+
+Fake server options: `--interval` (seconds before each server message, default 0.5), `--drop-after N` (cut the connection after N messages), `--port`.
+
 ## Test
 
 ```sh
@@ -41,7 +64,9 @@ cd client
 QT_QPA_PLATFORM=offscreen ../.venv/bin/python -m unittest discover -s tests -v
 ```
 
-The tests generate their own clips with ffmpeg, play them headless, and check anchors, epochs, positions (±50–250 ms), speed change, end of file, the paused first frame and the window. Set `ENCORE_SCREENSHOT=out.png` to save what the window rendered.
+The session tests (`tests/test_session_delivery.py`) need neither Qt nor GStreamer: `python3 -m unittest tests.test_session_delivery -v`.
+
+The player tests generate their own clips with ffmpeg, play them headless, and check anchors, epochs, positions (±50–250 ms), speed change, end of file, the paused first frame and the window. Set `ENCORE_SCREENSHOT=out.png` to save what the window rendered.
 
 ## Layout
 
@@ -51,6 +76,11 @@ The tests generate their own clips with ffmpeg, play them headless, and check an
 | `encore_client/player/anchors.py` | Epochs, anchors, timecode mapping. No GStreamer/Qt, reusable by EM-23 |
 | `encore_client/player/pipeline.py` | GStreamer pipeline; `poll()` handles the bus, sends anchors, returns the newest frame |
 | `encore_client/player/window.py` | PySide6 window: video view, controls, anchor log |
+| `encore_client/session/session.py` | `Session` (connection state, send/receive, delivery log), `event_rows`, `ScenarioDriver`. No Qt |
+| `encore_client/session/ws.py` | Standard-library WebSocket client/server |
+| `encore_client/session/fake_server.py` | Plays the server side of a contract sample (development only) |
+| `encore_client/session/panel.py` | PySide6 panel: Start/End, connection status, event table |
+| `encore_client/session/contract.py` | Loads the shared receiver from `contracts/reference/` |
 | `tools/make_test_video.sh` | Generates test clips with ffmpeg (nothing copyrighted is committed) |
 
 ## Known limits and risks
