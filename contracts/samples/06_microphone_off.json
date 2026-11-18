@@ -1,0 +1,252 @@
+{
+  "name": "06_microphone_off",
+  "title": "Late results after microphone off",
+  "description": "The microphone is disabled while evt-0008 is open. Its FINAL is still applied so the record closes, but evt-0009, a new detection from the old microphone generation, is refused and never shown as a new reaction.",
+  "session_id": "ses-sample-06",
+  "messages": [
+    {
+      "dir": "pc->server",
+      "msg": {
+        "schema": "encore.v1",
+        "kind": "control_update",
+        "capture_ms": 600000,
+        "idempotency_key": "ctl-microphone-1",
+        "sensor": "microphone",
+        "enabled": true,
+        "generation": 1,
+        "session_id": "ses-sample-06",
+        "seq": 0
+      }
+    },
+    {
+      "dir": "server->pc",
+      "msg": {
+        "schema": "encore.v1",
+        "kind": "control_ack",
+        "idempotency_key": "ctl-microphone-1",
+        "sensor": "microphone",
+        "generation": 1,
+        "status": "applied",
+        "session_id": "ses-sample-06"
+      }
+    },
+    {
+      "dir": "pc->server",
+      "msg": {
+        "schema": "encore.v1",
+        "kind": "playback_anchor",
+        "capture_ms": 600100,
+        "playback": {
+          "epoch": 1,
+          "content_id": "sample-movie-01",
+          "title": "Sample Movie",
+          "position_ms": 0,
+          "rate": 1.0,
+          "state": "playing"
+        },
+        "session_id": "ses-sample-06",
+        "seq": 1
+      }
+    },
+    {
+      "dir": "server->pc",
+      "msg": {
+        "schema": "encore.v1",
+        "kind": "event_update",
+        "cursor": 1,
+        "event": {
+          "event_id": "evt-0008",
+          "revision": 1,
+          "phase": "OPEN",
+          "reaction": {
+            "type": "laughter",
+            "confidence": 0.92
+          },
+          "intensity": {
+            "combined": 0.64,
+            "audio": 0.64,
+            "visual": null
+          },
+          "capture": {
+            "triggers_ms": [
+              610000
+            ],
+            "start_ms": 609800,
+            "end_ms": null
+          },
+          "generations": {
+            "microphone": 1,
+            "camera": null
+          },
+          "playback": {
+            "status": "mapped",
+            "epoch": 1,
+            "content_id": "sample-movie-01",
+            "title": "Sample Movie",
+            "timecode_start_ms": 9700,
+            "timecode_end_ms": null
+          },
+          "source": {
+            "model": "sample-fixture",
+            "config": "sample-1",
+            "aec": "uncancelled"
+          }
+        },
+        "session_id": "ses-sample-06"
+      }
+    },
+    {
+      "dir": "pc->server",
+      "msg": {
+        "schema": "encore.v1",
+        "kind": "control_update",
+        "capture_ms": 612000,
+        "idempotency_key": "ctl-microphone-2",
+        "sensor": "microphone",
+        "enabled": false,
+        "generation": 2,
+        "session_id": "ses-sample-06",
+        "seq": 2
+      }
+    },
+    {
+      "dir": "server->pc",
+      "msg": {
+        "schema": "encore.v1",
+        "kind": "control_ack",
+        "idempotency_key": "ctl-microphone-2",
+        "sensor": "microphone",
+        "generation": 2,
+        "status": "applied",
+        "session_id": "ses-sample-06"
+      }
+    },
+    {
+      "dir": "server->pc",
+      "msg": {
+        "schema": "encore.v1",
+        "kind": "event_update",
+        "cursor": 2,
+        "event": {
+          "event_id": "evt-0008",
+          "revision": 2,
+          "phase": "FINAL",
+          "reaction": {
+            "type": "laughter",
+            "confidence": 0.92
+          },
+          "intensity": {
+            "combined": 0.64,
+            "audio": 0.64,
+            "visual": null
+          },
+          "capture": {
+            "triggers_ms": [
+              610000
+            ],
+            "start_ms": 609800,
+            "end_ms": 611500
+          },
+          "generations": {
+            "microphone": 1,
+            "camera": null
+          },
+          "playback": {
+            "status": "mapped",
+            "epoch": 1,
+            "content_id": "sample-movie-01",
+            "title": "Sample Movie",
+            "timecode_start_ms": 9700,
+            "timecode_end_ms": 11400
+          },
+          "source": {
+            "model": "sample-fixture",
+            "config": "sample-1",
+            "aec": "uncancelled"
+          }
+        },
+        "session_id": "ses-sample-06"
+      }
+    },
+    {
+      "dir": "server->pc",
+      "msg": {
+        "schema": "encore.v1",
+        "kind": "event_update",
+        "cursor": 3,
+        "event": {
+          "event_id": "evt-0009",
+          "revision": 1,
+          "phase": "OPEN",
+          "reaction": {
+            "type": "scream",
+            "confidence": 0.8
+          },
+          "intensity": {
+            "combined": 0.7,
+            "audio": 0.7,
+            "visual": null
+          },
+          "capture": {
+            "triggers_ms": [
+              611800
+            ],
+            "start_ms": 611600,
+            "end_ms": null
+          },
+          "generations": {
+            "microphone": 1,
+            "camera": null
+          },
+          "playback": {
+            "status": "mapped",
+            "epoch": 1,
+            "content_id": "sample-movie-01",
+            "title": "Sample Movie",
+            "timecode_start_ms": 11500,
+            "timecode_end_ms": null
+          },
+          "source": {
+            "model": "sample-fixture",
+            "config": "sample-1",
+            "aec": "uncancelled"
+          }
+        },
+        "session_id": "ses-sample-06"
+      }
+    }
+  ],
+  "expected": {
+    "ignored": {},
+    "rejected": {
+      "stale_microphone_generation": 1
+    },
+    "unapplied_cursors": [],
+    "events": {
+      "evt-0008": {
+        "phase": "FINAL",
+        "revision": 2,
+        "type": "laughter"
+      }
+    },
+    "clips": [
+      {
+        "event_id": "evt-0008",
+        "index": 0,
+        "window_ms": [
+          595000,
+          620000
+        ],
+        "linked_to": null,
+        "expected_status": "unavailable",
+        "reason": "camera_off",
+        "missing_ms": [
+          [
+            595000,
+            620000
+          ]
+        ]
+      }
+    ]
+  }
+}

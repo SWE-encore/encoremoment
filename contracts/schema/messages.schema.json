@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SWE-encore/encoremoment/contracts/schema/messages.schema.json",
+  "title": "Encore Moment event and control messages (encore.v1)",
+  "description": "EM-1 contract. One JSON object per WSS text frame. See contracts/README.md for semantics.",
+  "type": "object",
+  "required": ["schema", "kind"],
+  "properties": {
+    "schema": { "const": "encore.v1" },
+    "kind": { "enum": ["playback_anchor", "control_update", "control_ack", "event_update"] }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/playback_anchor" },
+    { "$ref": "#/$defs/control_update" },
+    { "$ref": "#/$defs/control_ack" },
+    { "$ref": "#/$defs/event_update" }
+  ],
+  "$defs": {
+    "session_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{4,64}$"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+    },
+    "capture_ms": {
+      "description": "PC monotonic clock in milliseconds. Never wall-clock time or network arrival time.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "unit": {
+      "description": "Normalized value in [0, 1].",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "generation": {
+      "description": "Per-sensor counter. Increments on every enable and every disable.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "sensor": { "enum": ["camera", "microphone", "aec"] },
+
+    "playback_anchor": {
+      "description": "PC -> server. Player context used to map capture time to content timecode (R3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "session_id", "seq", "capture_ms", "playback"],
+      "properties": {
+        "schema": { "const": "encore.v1" },
+        "kind": { "const": "playback_anchor" },
+        "session_id": { "$ref": "#/$defs/session_id" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "capture_ms": { "$ref": "#/$defs/capture_ms" },
+        "playback": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["epoch", "content_id", "title", "position_ms", "rate", "state"],
+          "properties": {
+            "epoch": {
+              "description": "Changes on seek or content change.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "content_id": { "$ref": "#/$defs/id" },
+            "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+            "position_ms": { "type": "integer", "minimum": 0 },
+            "rate": { "type": "number", "exclusiveMinimum": 0 },
+            "state": { "enum": ["playing", "paused"] }
+          }
+        }
+      }
+    },
+
+    "control_update": {
+      "description": "PC -> server. A sensor or AEC state change (R5, R8, R12).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "session_id", "seq", "capture_ms", "idempotency_key", "sensor", "enabled", "generation"],
+      "properties": {
+        "schema": { "const": "encore.v1" },
+        "kind": { "const": "control_update" },
+        "session_id": { "$ref": "#/$defs/session_id" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "capture_ms": { "$ref": "#/$defs/capture_ms" },
+        "idempotency_key": { "$ref": "#/$defs/id" },
+        "sensor": { "$ref": "#/$defs/sensor" },
+        "enabled": { "type": "boolean" },
+        "generation": { "$ref": "#/$defs/generation" }
+      }
+    },
+
+    "control_ack": {
+      "description": "Server -> PC. Result of a control_update, matched by idempotency_key.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "session_id", "idempotency_key", "sensor", "generation", "status"],
+      "properties": {
+        "schema": { "const": "encore.v1" },
+        "kind": { "const": "control_ack" },
+        "session_id": { "$ref": "#/$defs/session_id" },
+        "idempotency_key": { "$ref": "#/$defs/id" },
+        "sensor": { "$ref": "#/$defs/sensor" },
+        "generation": { "$ref": "#/$defs/generation" },
+        "status": { "enum": ["applied", "duplicate", "rejected"] },
+        "reason": { "type": "string", "maxLength": 200 }
+      }
+    },
+
+    "event_update": {
+      "description": "Server -> PC. One committed change to one reaction event (R2, R3, R9, R10, R11).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "session_id", "cursor", "event"],
+      "properties": {
+        "schema": { "const": "encore.v1" },
+        "kind": { "const": "event_update" },
+        "session_id": { "$ref": "#/$defs/session_id" },
+        "cursor": {
+          "description": "Per-session result cursor. Starts at 1 and is contiguous.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "event": { "$ref": "#/$defs/event" }
+      }
+    },
+
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "revision", "phase", "reaction", "intensity", "capture", "generations", "playback", "source"],
+      "properties": {
+        "event_id": {
+          "description": "Stable across updates, retries and reconnects.",
+          "$ref": "#/$defs/id"
+        },
+        "revision": {
+          "description": "Increments on every change to this event. Higher revision wins.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "phase": { "enum": ["OPEN", "UPDATE", "FINAL"] },
+        "reaction": {
+          "description": "What was heard. Confidence is model confidence for this class, not intensity.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "confidence"],
+          "properties": {
+            "type": { "enum": ["laughter", "scream", "gasp"] },
+            "confidence": { "$ref": "#/$defs/unit" }
+          }
+        },
+        "intensity": {
+          "description": "How strong the observable reaction was. combined = max(audio, visual) after normalization; null means that modality was unavailable.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["combined", "audio", "visual"],
+          "properties": {
+            "combined": { "$ref": "#/$defs/unit" },
+            "audio": { "oneOf": [{ "$ref": "#/$defs/unit" }, { "type": "null" }] },
+            "visual": { "oneOf": [{ "$ref": "#/$defs/unit" }, { "type": "null" }] }
+          }
+        },
+        "capture": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["triggers_ms", "start_ms", "end_ms"],
+          "properties": {
+            "triggers_ms": {
+              "description": "Strictly ascending capture times at which the detection threshold was exceeded. triggers_ms[0] is the trigger t0; later entries are re-fires. A new revision only appends.",
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/capture_ms" }
+            },
+            "start_ms": { "$ref": "#/$defs/capture_ms" },
+            "end_ms": {
+              "description": "Null until the reaction interval closes. Required on FINAL.",
+              "oneOf": [{ "$ref": "#/$defs/capture_ms" }, { "type": "null" }]
+            }
+          }
+        },
+        "generations": {
+          "description": "Sensor generations in effect when the reaction was captured. camera is null when the camera was off.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["microphone", "camera"],
+          "properties": {
+            "microphone": { "$ref": "#/$defs/generation" },
+            "camera": { "oneOf": [{ "$ref": "#/$defs/generation" }, { "type": "null" }] }
+          }
+        },
+        "playback": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status"],
+              "properties": { "status": { "const": "pending" } }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "epoch", "content_id", "title", "timecode_start_ms", "timecode_end_ms"],
+              "properties": {
+                "status": { "const": "mapped" },
+                "epoch": { "type": "integer", "minimum": 0 },
+                "content_id": { "$ref": "#/$defs/id" },
+                "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+                "timecode_start_ms": { "type": "integer", "minimum": 0 },
+                "timecode_end_ms": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] }
+              }
+            }
+          ]
+        },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["model", "config", "aec"],
+          "properties": {
+            "model": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "config": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "aec": { "enum": ["active", "warming_up", "reference_unavailable", "uncancelled", "off"] }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "phase": { "const": "FINAL" } } },
+          "then": {
+            "properties": {
+              "capture": { "properties": { "end_ms": { "$ref": "#/$defs/capture_ms" } } }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "phase": { "const": "OPEN" } } },
+          "then": { "properties": { "revision": { "const": 1 } } }
+        }
+      ]
+    }
+  }
+}
