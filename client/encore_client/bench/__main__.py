@@ -33,6 +33,8 @@ def main(argv: list[str] | None = None) -> int:
     from .window import BenchWindow
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
+    app.setApplicationName("encore-bench")  # matches the app-menu shortcut (scripts/install-bench-shortcut.sh)
+    app.setDesktopFileName("encore-bench")
     win = BenchWindow(model=args.model, server_url=args.server, audio_file=args.file, speed=args.speed)
     win.show()
     return app.exec()

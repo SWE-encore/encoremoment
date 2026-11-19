@@ -91,6 +91,8 @@ cd client
 ../.venv/bin/python -m encore_client.bench
 ```
 
+Or, from anywhere, `scripts/encore-bench` in the repository: it finds the checkout's `.venv` and uses YAMNet when TensorFlow is installed there. To start it from the app menu or dock instead, run `scripts/install-bench-shortcut.sh` once (Ubuntu and other freedesktop desktops; `--remove` takes it out). Started that way, its output goes to `~/.cache/encore/bench.log` and a failure shows as a notification.
+
 - **Audio in.** The default microphone, or any audio or video file (whatever ffmpeg reads is converted to 16 kHz mono). Files play at 1×, 4× or 16×, and an event's content time is its position in the file. Nothing is echo-cancelled, so use headphones if anything else is playing. If the input delivers exact silence for 1.5 s, the bench says the microphone is probably muted in the system settings.
 - **Server.** Built-in, with the loudness stand-in (any loud sound counts as laughter) or YAMNet; or the URL of a server started separately (`python -m encore_server`, possibly through an SSH tunnel). Scores are visible only with the built-in server; events show either way.
 - **Trigger levels.** The detector's level per reaction, applied at the next Start. Results from non-default levels say so in `source.config`, for example `bench gasp=0.30 laughter=0.30 scream=0.40`.
