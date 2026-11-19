@@ -82,7 +82,9 @@ artifacts/                  Local run outputs, excluded from version control
 
 See [architecture.md](docs/architecture.md) for the current data flow and boundaries for future work.
 `server/` is a first session server: sessions in memory, YAMNet in the same process. Its README lists what is not done yet.
-`inference/` and `deploy/` are planned components required by the design, **not implemented services**.
+`inference/` is a planned component required by the design, **not an implemented service**.
+The [EC2 model setup](deploy/models/README.md) installs YAMNet and MediaPipe Face Landmarker
+on a shared host for command-line inference testing; it does not run the session server.
 This integration does not add empty service skeletons or invent new APIs.
 
 ## Current behavior and remaining work
