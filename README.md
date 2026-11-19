@@ -47,6 +47,7 @@ cd client
 ```
 
 To check contract delivery without a window, run `python -m encore_client --demo --headless` from `client/`, using the virtual environment's Python.
+To try reaction detection with your microphone or an audio file, run `scripts/encore-bench` (the test bench in [client/README.md](client/README.md)); `scripts/install-bench-shortcut.sh` adds it to the Ubuntu app menu.
 Select another fixture with `--scenario ../contracts/samples/05_camera_off.json`.
 `--scenario` alone connects to an external fake server; adding `--demo` starts the built-in fake server.
 For the session server, start it as described in [server/README.md](server/README.md) and keep the default `--server ws://127.0.0.1:8765` (through an SSH tunnel for a remote host), or use `--server wss://host`. It serves `/v1/sessions/<session_id>/stream`.
@@ -66,6 +67,7 @@ client/
     __main__.py             Common entry point and demo server lifecycle
     player/                 GStreamer content playback, position, epochs, and anchors
     session/                WebSocket, session state, delivery/deduplication, fake_server
+    bench/                  Test bench: built-in server, live model scores, received events
     clips/                  Saved clip index model, list, and local preview
     sensing/                Camera state model; real device adapters are future work
     ui/                     Integrated workspace, Highlights, shared display helpers
@@ -73,7 +75,7 @@ client/
   tools/                    Test video generation
   docs/                     Existing EM-23 delivery validation records
 samples/                    Synthetic videos and sample index for the clip UI
-scripts/                    Sample regeneration tools
+scripts/                    Sample regeneration, test bench launcher and app-menu shortcut
 documents/                  Submission sources, PDFs, and source archives
 docs/                       Current architecture and integration decisions
 .github/                    PR template and Ubuntu CI

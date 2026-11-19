@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlsplit
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
-from .detector import DetectorConfig
+from .detector import DetectorConfig, Frame
 from .session import IDLE_S, ServerSession
 
 PATH = re.compile(r"^/v1/sessions/([A-Za-z0-9_-]{4,64})/stream$")
@@ -39,11 +39,15 @@ class EncoreServer:
         *,
         say: Callable[[str], None] = lambda line: None,
         idle_s: float = IDLE_S,
+        on_frame: Callable[[str, Frame], None] | None = None,
     ) -> None:
+        """``on_frame(session_id, frame)``: every analysed frame, for debugging tools.
+        It is called on a worker thread."""
         self.model = model
         self.config = config or DetectorConfig()
         self.say = say
         self.idle_s = idle_s
+        self.on_frame = on_frame
         self.sessions: dict[str, ServerSession] = {}
         self._active: dict[str, Any] = {}
         self._locks: dict[str, asyncio.Lock] = {}
@@ -66,7 +70,9 @@ class EncoreServer:
             after = 0
         session = self.sessions.get(sid)
         if session is None:
-            session = self.sessions[sid] = ServerSession(sid, self.model, self.config, idle_s=self.idle_s)
+            watch = (lambda frame, sid=sid: self.on_frame(sid, frame)) if self.on_frame else None
+            session = self.sessions[sid] = ServerSession(sid, self.model, self.config, idle_s=self.idle_s,
+                                                         on_frame=watch)
             self._locks[sid] = asyncio.Lock()
         lock = self._locks[sid]
         old = self._active.get(sid)

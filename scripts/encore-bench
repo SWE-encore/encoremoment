@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Open the Encore Moment test bench (client/README.md, "Test bench").
+#
+#   scripts/encore-bench [bench options]      for example: --file laugh.wav --speed 4
+#
+# Uses this checkout's .venv, or $ENCORE_VENV. YAMNet is the default model when
+# TensorFlow is installed there; otherwise the loudness stand-in, with a notice.
+# Started from the app menu (no terminal), output goes to ~/.cache/encore/bench.log
+# and a failure shows as a desktop notification.
+set -u
+
+here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+repo=$(dirname "$here")
+venv=${ENCORE_VENV:-$repo/.venv}
+py=$venv/bin/python
+cache=${XDG_CACHE_HOME:-$HOME/.cache}/encore
+mkdir -p "$cache"
+
+if [ ! -t 2 ]; then  # no terminal to show errors in: keep a log
+    exec >>"$cache/bench.log" 2>&1
+    echo "--- $(date '+%F %T') $0 $*"
+    notify=1
+else
+    notify=0
+fi
+
+fail() {
+    echo "encore-bench: $1" >&2
+    if [ "$notify" = 1 ] && command -v notify-send >/dev/null; then
+        notify-send -i dialog-error "Encore test bench" "$1"
+    fi
+    exit 1
+}
+
+[ -x "$py" ] || fail "No Python environment at $venv. Create it as described in README.md."
+"$py" -c "import PySide6.QtMultimedia, websockets, jsonschema" 2>/dev/null \
+    || fail "$venv is missing packages. Run: $py -m pip install -r $repo/requirements-dev.txt"
+
+args=("$@")
+case " $* " in
+    *" --model"*) ;;
+    *)
+        if "$py" -c "import importlib.util as u, sys; sys.exit(u.find_spec('tensorflow_hub') is None)" 2>/dev/null; then
+            args=(--model yamnet "${args[@]}")
+        else
+            echo "encore-bench: TensorFlow is not installed in $venv, so the loudness stand-in is used." \
+                 "For YAMNet: $py -m pip install -r $repo/server/requirements-yamnet.txt" >&2
+        fi
+        ;;
+esac
+
+# Keep the downloaded YAMNet model across reboots (TensorFlow Hub's default is in /tmp).
+export TFHUB_CACHE_DIR=${TFHUB_CACHE_DIR:-$cache/tfhub}
+export PYTHONPATH="$repo/client${PYTHONPATH:+:$PYTHONPATH}"
+
+"$py" -m encore_client.bench "${args[@]}"
+status=$?
+[ "$status" = 0 ] || fail "The test bench stopped with an error (exit $status). See $cache/bench.log"
