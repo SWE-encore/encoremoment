@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import json
 import time
-from collections import Counter
+from collections import Counter, deque
 from typing import Any, Callable
 
+from .vision import MAGIC, unpack_pair
 from .audio import AudioWindows, RoomBaseline, rms_db
 from .contract import PC_TO_SERVER, SessionView, decode_audio_frame, schema_errors
-from .detector import DetectorConfig, Frame, ReactionDetector
+from .detector import DetectorConfig, Frame, ReactionDetector, TabRules
 
 IDLE_S = 2.0  # no audio for this long while an event is open: the stream stopped
 
@@ -34,6 +35,9 @@ class ServerSession:
         model: Callable[[bytes], dict[str, float]],
         config: DetectorConfig | None = None,
         *,
+        face_model=None,
+        smile_threshold: float = TabRules.smile,
+        quiet_ms: int = TabRules.quiet_ms,
         clock: Callable[[], float] = time.monotonic,
         idle_s: float = IDLE_S,
         on_frame: Callable[[Frame], None] | None = None,
@@ -43,9 +47,14 @@ class ServerSession:
         not part of the contract and nothing is sent to the PC for it.
         """
         self.session_id = session_id
+        self.face_model = face_model
+        self.tab_rules = TabRules(smile=smile_threshold, quiet_ms=quiet_ms) if face_model is not None else None
+        self.smiles = deque(maxlen=12)
+        self.face_frames = 0
+        self.faces_seen = 0
         self.model = model
         self.view = SessionView(session_id)
-        self.detector = ReactionDetector(config)
+        self.detector = ReactionDetector(config, self.tab_rules)
         self.baseline = RoomBaseline()
         self.windows = AudioWindows()
         self.log: list[dict[str, Any]] = []
@@ -81,6 +90,11 @@ class ServerSession:
     def on_audio(self, data: bytes) -> list[dict[str, Any]]:
         """A binary audio frame from the PC. Runs the model on every complete window."""
         try:
+            rgb = None
+            if data.startswith(MAGIC):
+                camera_generation, image_ms, rgb, data = unpack_pair(data)
+                if self.face_model is None or camera_generation != self._camera_generation():
+                    raise ValueError("unavailable or stale camera")
             header, pcm = decode_audio_frame(data)
         except ValueError:
             self.invalid += 1
@@ -90,20 +104,42 @@ class ServerSession:
             return []
         if self._apply(header)[0] != "applied":
             return []  # old microphone generation (R8) or a retried chunk
+        if rgb is not None:
+            image_smile = self.face_model(rgb)
+            self.face_frames += 1
+            self.faces_seen += int(image_smile is not None)
+            self.smiles.append((image_ms, image_smile))
         self.audio_chunks += 1
         self._last_audio = self._clock()
         out = []
         for w in self.windows.add(header, pcm):
             frame = Frame(w.start_ms, w.end_ms, self.model(w.pcm), self.baseline.strength(rms_db(w.pcm)),
                           w.generation, self._camera_generation(), w.aec)
+            if self.tab_rules and frame.camera is not None:
+                frame.visual = max((score for t, score in self.smiles
+                                    if w.start_ms <= t < w.end_ms and score is not None), default=None)
             if self._on_frame is not None:
                 self._on_frame(frame)
-            out += self._commit(self.detector.push(frame))
+            changes = self.detector.push(frame)
+            if rgb is not None:
+                rules = self.tab_rules
+                active = self.detector.open.get("laughter")
+                out.append({"kind": "demo_scores", "laughter": frame.scores.get("laughter", 0),
+                            "smile": frame.visual, "face_detected": image_smile is not None,
+                            "face_frames": self.face_frames, "faces_seen": self.faces_seen,
+                            "smile_threshold": rules.smile, "laughter_threshold": rules.strong_audio,
+                            "assisted_audio_threshold": rules.assisted_audio,
+                            "release_ratio": rules.release_ratio, "quiet_ms": rules.quiet_ms,
+                            "quiet_elapsed_ms": w.end_ms - active.last_active_ms if active else None})
+            out += self._commit(changes)
         return out
 
     def on_idle(self) -> list[dict[str, Any]]:
         """Close open events once audio has stopped arriving (file ended, connection stalled)."""
-        if self.detector.open and self._last_audio is not None and self._clock() - self._last_audio >= self.idle_s:
+        idle_s = self.idle_s
+        if self.tab_rules and self._camera_generation() is not None:
+            idle_s = max(idle_s, self.tab_rules.quiet_ms / 1000)
+        if self.detector.open and self._last_audio is not None and self._clock() - self._last_audio >= idle_s:
             self.windows.reset()
             return self._commit(self.detector.close_all())
         return []
@@ -129,6 +165,11 @@ class ServerSession:
         if reason:
             ack["reason"] = reason
         out = [ack]
+        if status == "applied" and msg["sensor"] in ("microphone", "camera"):
+            self.smiles.clear()
+            if self.face_model is not None and msg["sensor"] == "camera":
+                self.windows.reset()
+                return out + self._commit(self.detector.close_all())
         if status == "applied" and msg["sensor"] == "microphone" and not msg["enabled"]:
             # R8: no new audio events from here on; open ones close with what was heard.
             self.windows.reset()
@@ -157,6 +198,11 @@ class ServerSession:
                 "playback": self._playback(ev),
                 "source": {"model": self.model.name, "config": self.detector.config.name, "aec": aec},
             }
+            if self.face_model is not None and ev["generations"]["camera"] is not None and ev["reaction"]["type"] == "laughter":
+                rules = self.tab_rules
+                ev["source"].update(model=self.model.name + "+mediapipe-face",
+                                    config=f"tab-v2-a{rules.strong_audio:g}-a{rules.assisted_audio:g}"
+                                           f"-s{rules.smile:g}-q{rules.quiet_ms}")
             msg = {
                 "schema": "encore.v1",
                 "kind": "event_update",

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Encore Moment · 탭 시연</title>
+<style>
+:root{color-scheme:light;font:16px/1.5 system-ui,sans-serif;color:#152d32;background:#f7faf9}
+body{max-width:1000px;margin:2rem auto;padding:0 1rem}h1{margin-bottom:.25rem}h2{font-size:1.1rem;margin:.6rem 0}
+button,select{font:inherit;padding:.45rem .8rem;border:1px solid #9baead;border-radius:.45rem;background:white}
+button:enabled{cursor:pointer}#start{background:#195e58;color:white}#stop{margin-left:.4rem}
+section{background:white;border:1px solid #c8d7d4;border-radius:.7rem;padding:1rem}
+main{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:1rem 0}
+video{display:block;width:100%;aspect-ratio:16/9;background:#142322;border-radius:.3rem}
+[hidden]{display:none!important}
+#signal{font-weight:700;padding:.7rem 1rem;border-left:5px solid #76908c;background:#e5eeec}
+#signal[data-state=recording]{background:#ffe8df;border-color:#b03e1c}
+#signal[data-state=saved]{background:#dff4e8;border-color:#247e51}
+#log{font-size:.85rem;white-space:pre-wrap;overflow-wrap:anywhere}#clips{max-width:100%}
+#face-input{width:160px;max-width:100%;vertical-align:middle}#roi{margin:0}
+@media(max-width:720px){main{grid-template-columns:1fr}}
+</style>
+<h1>Encore Moment</h1>
+<p>시연을 시작하고 유튜브 탭과 탭 오디오를 공유하세요.</p>
+<button id="start">시연 시작</button><button id="stop" disabled>종료</button>
+<p id="signal" role="status">시연 대기 중</p>
+<main>
+<section><h2>공유 중인 영상</h2><video id="preview" autoplay muted playsinline></video>
+<p id="scores">웃음소리 — · 미소 —</p><p id="faces">얼굴 검출 결과 대기</p>
+<figure id="roi" hidden><canvas id="face-input" width="320" height="180"></canvas> <small id="roi-name"></small></figure>
+<small id="peaks"></small><p id="rule"></p></section>
+<section><h2>녹화된 클립 <small id="saved-count"></small></h2><p id="clip-progress" role="status"></p>
+<video id="early" controls muted playsinline hidden></video>
+<div id="empty"><p>이 주소에 저장된 클립이 없습니다.</p><a id="other-origin"></a></div>
+<div id="saved" hidden>
+<video id="player" controls playsinline></video>
+<small id="playback" role="status"></small>
+<p><select id="clips" aria-label="녹화된 클립 선택"></select></p>
+<a id="download">WebM 다운로드</a>
+</div></section>
+</main>
+<details><summary>서버 이벤트 기록</summary><pre id="log"></pre></details>
+<script type="module" src="tab.js?v=3"></script>
+</html>

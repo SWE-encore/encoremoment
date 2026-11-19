@@ -16,15 +16,17 @@ import asyncio
 import json
 import re
 import threading
+from contextlib import aclosing
 from http import HTTPStatus
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
 
-from websockets.asyncio.server import serve
+from websockets.asyncio.server import serve, unix_serve
 from websockets.exceptions import ConnectionClosed
 
-from .detector import DetectorConfig, Frame
+from .detector import DetectorConfig, Frame, TabRules
 from .session import IDLE_S, ServerSession
+from .stream import messages_with_idle
 
 PATH = re.compile(r"^/v1/sessions/([A-Za-z0-9_-]{4,64})/stream$")
 POLL_S = 0.5
@@ -37,12 +39,18 @@ class EncoreServer:
         model: Callable[[bytes], dict[str, float]],
         config: DetectorConfig | None = None,
         *,
+        face_model=None,
+        smile_threshold: float = TabRules.smile,
+        quiet_ms: int = TabRules.quiet_ms,
         say: Callable[[str], None] = lambda line: None,
         idle_s: float = IDLE_S,
         on_frame: Callable[[str, Frame], None] | None = None,
     ) -> None:
         """``on_frame(session_id, frame)``: every analysed frame, for debugging tools.
         It is called on a worker thread."""
+        self.face_model = face_model
+        self.smile_threshold = smile_threshold
+        self.quiet_ms = quiet_ms
         self.model = model
         self.config = config or DetectorConfig()
         self.say = say
@@ -52,8 +60,16 @@ class EncoreServer:
         self._active: dict[str, Any] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
-    async def run(self, host: str, port: int) -> None:
-        async with serve(self.handler, host, port, process_request=self.check_path, max_size=MAX_MESSAGE):
+    async def run(self, host: str, port: int, *, unix_socket: str | None = None) -> None:
+        options = dict(process_request=self.check_path, max_size=MAX_MESSAGE)
+        if unix_socket:
+            listener = unix_serve(self.handler, unix_socket, **options)
+            address = unix_socket
+        else:
+            listener = serve(self.handler, host, port, **options)
+            address = f"ws://{host}:{port}/v1/sessions/<session_id>/stream"
+        async with listener:
+            self.say(f"listening on {address}")
             await asyncio.get_running_loop().create_future()  # until cancelled
 
     def check_path(self, connection, request):
@@ -72,8 +88,10 @@ class EncoreServer:
         if session is None:
             watch = (lambda frame, sid=sid: self.on_frame(sid, frame)) if self.on_frame else None
             session = self.sessions[sid] = ServerSession(sid, self.model, self.config, idle_s=self.idle_s,
-                                                         on_frame=watch)
+                                                         on_frame=watch, face_model=self.face_model,
+                                                         smile_threshold=self.smile_threshold, quiet_ms=self.quiet_ms)
             self._locks[sid] = asyncio.Lock()
+        windows = 0
         lock = self._locks[sid]
         old = self._active.get(sid)
         self._active[sid] = ws
@@ -83,21 +101,23 @@ class EncoreServer:
         try:
             for msg in session.results_after(after):
                 await ws.send(json.dumps(msg, ensure_ascii=False))
-            while True:
-                try:
-                    data = await asyncio.wait_for(ws.recv(), POLL_S)  # recv() is safe to cancel
-                except TimeoutError:
-                    data = None
-                async with lock:
-                    if data is None:
-                        out = session.on_idle()
-                    elif isinstance(data, bytes):
-                        out = await asyncio.to_thread(session.on_audio, data)
-                    else:
-                        out = session.on_text(data)
-                for msg in out:
-                    self._report(sid, msg)
-                    await ws.send(json.dumps(msg, ensure_ascii=False))
+            async with aclosing(messages_with_idle(ws.recv, POLL_S)) as messages:
+                async for data in messages:
+                    async with lock:
+                        if data is None:
+                            out = session.on_idle()
+                        elif isinstance(data, bytes):
+                            out = await asyncio.to_thread(session.on_audio, data)
+                        else:
+                            out = session.on_text(data)
+                    for msg in out:
+                        if msg["kind"] == "demo_scores":
+                            windows += 1
+                            if windows == 1 or windows % 10 == 0:
+                                self.say(f"{sid}: window {windows} laughter={msg['laughter']:.3f} "
+                                         f"smile={msg['smile']} faces={msg['faces_seen']}/{msg['face_frames']}")
+                        self._report(sid, msg)
+                        await ws.send(json.dumps(msg, ensure_ascii=False))
         except ConnectionClosed:
             pass
         finally:
