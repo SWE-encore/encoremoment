@@ -5,14 +5,14 @@
 - Submission A preserves the earlier smart-TV scope; Submission B defines the current PC-first design.
 - The integration follows the [environment and responsibilities](../documents/submission-b/sections/environment.tex), [R1–R13 requirements](../documents/submission-b/sections/requirements.tex), and [detailed specifications](../documents/submission-b/sections/specifications.tex).
 - The contract README remains a draft with unresolved decisions. Planned behavior in a design document is not evidence that the implementation is complete.
-- This work combines PR #1 (contract), #2 (player), #3 (session), and the clip UI branch into one application. It does not implement a new server or AI service.
+- This work combines PR #1 (contract), #2 (player), #3 (session), and the clip UI branch into one application. It did not implement a server or AI service; the session server in `server/` came later ([server/README.md](../server/README.md)).
 
 ## Data flow
 
 ```mermaid
 flowchart LR
     P[Content video: GStreamer player] -->|playback_anchor| S[Session]
-    F[fake_server or future real server] <-->|encore.v1 WebSocket| S
+    F[server/: session server, or fake_server] <-->|encore.v1 WebSocket| S
     S --> R[contracts reference receiver]
     R --> T[Timeline: one row per event_id]
     R --> H[Highlights: FINAL events ranked by intensity]
@@ -37,9 +37,9 @@ The current UI does not start sensing devices. A live session sends a microphone
 | Clip generation | Add buffering/export layers in clips/. Consume FINAL events and contract clip windows; verify decoding before updating the index |
 | Clip associations | Explicitly associate session_id/event_id with clip_id. Do not arbitrarily match the current sample list to live events |
 | SQLite | Replace the load_index boundary in clips/model.py with a repository interface, retaining UI sorting/display |
-| Real server | Preserve the Transport boundary in session/. Agree on the stream path, Start/End, authentication, and media upload contract first |
+| Real server | `server/` serves the stream path and receives the audio frames. Start/End over HTTP and authentication still need agreement; keep the Transport boundary in session/ |
 | Reconnection | Implement EM-20 using the existing Session unsent/cursor state. Do not display a dropped connection as automatically recovered |
-| Server/AI/deployment | Add server/, inference/, and deploy/ in later PRs. The design separates API/worker services and uses Redis/PostgreSQL |
+| Server/AI/deployment | `server/` runs YAMNet in its own process with sessions in memory. The design's separate API/worker services, Redis/PostgreSQL, and deploy/ come in later PRs; the model adapter and `ServerSession` are where they attach |
 
 ## Existing entry points
 
