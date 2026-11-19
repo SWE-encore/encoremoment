@@ -38,3 +38,7 @@ SCHEMA = "encore.v1"
 SessionView = _contract.SessionView
 PC_TO_SERVER = _contract.PC_TO_SERVER
 SERVER_TO_PC = _contract.SERVER_TO_PC
+AUDIO_RATE = _contract.AUDIO_RATE
+AUDIO_MAX_SAMPLES = _contract.AUDIO_MAX_SAMPLES
+encode_audio_frame = _contract.encode_audio_frame
+decode_audio_frame = _contract.decode_audio_frame

@@ -1,0 +1,7 @@
+# The YAMNet model (--model yamnet). CPU-only TensorFlow, checked together on Python 3.12.
+-r requirements.txt
+tensorflow==2.18.1
+tensorflow-hub==0.16.1
+tf-keras==2.18.0
+numpy==1.26.4
+setuptools<81

@@ -49,7 +49,7 @@ cd client
 To check contract delivery without a window, run `python -m encore_client --demo --headless` from `client/`, using the virtual environment's Python.
 Select another fixture with `--scenario ../contracts/samples/05_camera_off.json`.
 `--scenario` alone connects to an external fake server; adding `--demo` starts the built-in fake server.
-For a real server, use `--server wss://host`. The proposed stream path is `/v1/sessions/<session_id>/stream` and must be agreed with the server implementation.
+For the session server, start it as described in [server/README.md](server/README.md) and keep the default `--server ws://127.0.0.1:8765` (through an SSH tunnel for a remote host), or use `--server wss://host`. It serves `/v1/sessions/<session_id>/stream`.
 In normal mode, Start becomes available after the video's first playback anchor is ready.
 Use `--clip-index /path/index.json` to select a saved clip index.
 The default is `artifacts/clip_index.json` in normal mode and `samples/clip_index.json` in demo mode.
@@ -58,6 +58,9 @@ The default is `artifacts/clip_index.json` in normal mode and `samples/clip_inde
 
 ```text
 contracts/                  Shared PC/server message contract, fixtures, reference receiver, tests
+server/
+  encore_server/            Session server: encore.v1 WebSocket, YAMNet reaction events
+  tests/                    Detector, session, YAMNet, and client-to-server tests
 client/
   encore_client/
     __main__.py             Common entry point and demo server lifecycle
@@ -78,9 +81,11 @@ artifacts/                  Local run outputs, excluded from version control
 ```
 
 See [architecture.md](docs/architecture.md) for the current data flow and boundaries for future work.
-`server/` and `inference/` remain planned services. The [EC2 model setup](deploy/models/README.md)
-installs YAMNet and MediaPipe Face Landmarker for command-line inference testing.
-It does not implement the session API, live media transport, or an inference worker service.
+`server/` is a first session server: sessions in memory, YAMNet in the same process. Its README lists what is not done yet.
+`inference/` is a planned component required by the design, **not an implemented service**.
+The [EC2 model setup](deploy/models/README.md) installs YAMNet and MediaPipe Face Landmarker
+on a shared host for command-line inference testing; it does not run the session server.
+This integration does not add empty service skeletons or invent new APIs.
 
 ## Current behavior and remaining work
 
@@ -92,11 +97,11 @@ It does not implement the session API, live media transport, or an inference wor
 | UI | Received event timeline, FINAL events ranked by intensity in Highlights, saved clip review | Event-to-exported-clip links, deletion, new sessions in the same window |
 | Sensing state | Camera/microphone capture shown as Off and unavailable; camera state model retained | Device callbacks and control contract integration |
 | Clips | Playback offered only for ready/partial entries with a real, nonempty file | EM-2 buffering, FFmpeg generation/verification, SQLite index |
-| Server/AI | fake_server replays fixtures only | Real API/worker/Redis/PostgreSQL, inference, deployment |
+| Server/AI | Session server: control acks, YAMNet reaction events with content timecode, replay from a cursor, in memory. fake_server still replays fixtures | Threshold tuning on real audience audio, Redis/PostgreSQL, session HTTP API and authentication, separate inference workers, deployment |
 
 A `ready` index entry assumes that export has already validated the file. The UI's existence and size checks alone do not guarantee successful decoding.
 When the GStreamer echo probe is missing, the player reports it as unavailable. This must not be interpreted as completed AEC support.
-The design document's PANNs choice still differs from the YAMNet decision recorded in the contract README. This integration does not choose a model on the team's behalf.
+The server uses YAMNet, the team's 2026-11-05 decision recorded in the contract README; the design document still names PANNs. The model sits behind a one-function adapter (`server/encore_server/models.py`), so changing it changes no message.
 
 ## Team workflow
 

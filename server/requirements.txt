@@ -1,0 +1,4 @@
+# Session server (python -m encore_server). Run from a repository checkout:
+# it loads contracts/ like the client does.
+websockets==15.0.1
+jsonschema>=4.18,<5

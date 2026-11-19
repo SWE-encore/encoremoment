@@ -42,11 +42,18 @@ CONNECTION_TEXT = {
 
 class CameraController:
     """Camera state machine. State changes only through device callbacks
-    (on_first_frame, on_stopped, on_device_lost)."""
+    (on_first_frame, on_stopped, on_device_lost).
+
+    ``generation`` is the camera generation of the encore.v1 contract
+    (contracts/README.md, receiver rule 5): it increments on every enable and
+    every disable, so each control_update carries a newer generation than the
+    one before it. Losing the device while it was enabled counts as a disable.
+    Late callbacks from an older generation are ignored.
+    """
 
     def __init__(self) -> None:
         self.state = CameraState.OFF   # Requirement 5: off by default
-        self.generation = 0            # Incremented on each enable; late results from older generations are ignored
+        self.generation = 0
 
     def request_enable(self, session_active: bool) -> bool:
         if not session_active or self.state not in (CameraState.OFF, CameraState.ERROR):
@@ -58,6 +65,7 @@ class CameraController:
     def request_disable(self) -> bool:
         if self.state not in (CameraState.STARTING, CameraState.ON):
             return False
+        self.generation += 1
         self.state = CameraState.STOPPING
         return True
 
@@ -71,6 +79,8 @@ class CameraController:
             self.state = CameraState.OFF
 
     def on_device_lost(self) -> None:
+        if self.state in (CameraState.STARTING, CameraState.ON):
+            self.generation += 1       # capture ended without a request: still a disable
         if self.state != CameraState.OFF:
             self.state = CameraState.ERROR
 

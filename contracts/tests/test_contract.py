@@ -16,7 +16,14 @@ from jsonschema import Draft202012Validator
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "reference"))
 
-from encore_contract import MAX_MS, SessionView, clip_windows, replay  # noqa: E402
+from encore_contract import (  # noqa: E402
+    MAX_MS,
+    SessionView,
+    clip_windows,
+    decode_audio_frame,
+    encode_audio_frame,
+    replay,
+)
 
 SCHEMA = json.loads((ROOT / "schema" / "messages.schema.json").read_text())
 VALIDATOR = Draft202012Validator(SCHEMA)
@@ -73,6 +80,14 @@ class SchemaTest(unittest.TestCase):
         msg = self._event()
         msg["event"]["emotion"] = "happy"
         self.assertNotEqual(schema_errors(msg), [])
+
+    def test_audio_format_is_fixed_and_chunks_are_bounded(self):
+        sample = load(ROOT / "samples" / "07_microphone_audio.json")
+        header = next(s["msg"] for s in sample["messages"] if s["msg"]["kind"] == "audio_chunk")
+        for field, value in (("sample_rate", 48_000), ("channels", 2), ("encoding", "f32le"),
+                             ("samples", 16_001), ("samples", 0), ("aec", "maybe")):
+            with self.subTest(field=field, value=value):
+                self.assertNotEqual(schema_errors(header | {field: value}), [])
 
 
 class ClipRuleTest(unittest.TestCase):
@@ -153,6 +168,55 @@ class ReceiverRulesTest(unittest.TestCase):
         msg["cursor"] = self.view.next_cursor + 1
         self.view.receive("server->pc", msg)
         self.assertEqual(self.view.summary()["unapplied_cursors"], [msg["cursor"]])
+
+
+class AudioRulesTest(unittest.TestCase):
+    def setUp(self):
+        self.sample = load(ROOT / "samples" / "07_microphone_audio.json")
+        self.header = copy.deepcopy(
+            next(s["msg"] for s in self.sample["messages"] if s["msg"]["kind"] == "audio_chunk")
+        )
+
+    def test_sample_counts_chunks_and_gaps(self):
+        view = replay(self.sample)
+        self.assertEqual((view.audio_chunks, view.audio_gaps), (4, 1))
+
+    def test_audio_needs_the_current_microphone_generation(self):
+        view = SessionView(self.sample["session_id"])
+        view.receive("pc->server", self.header)  # microphone never turned on
+        mic_on = self.sample["messages"][0]["msg"]
+        view.receive("pc->server", mic_on)
+        view.receive("pc->server", self.header | {"generation": 2})
+        self.assertEqual(view.rejected["stale_audio_generation"], 2)
+        view.receive("pc->server", self.header)
+        self.assertEqual(view.audio_chunks, 1)
+
+    def test_audio_is_sent_by_the_pc_only(self):
+        view = SessionView(self.sample["session_id"])
+        view.receive("server->pc", self.header)
+        self.assertEqual(view.rejected["wrong_direction"], 1)
+
+    def test_frame_round_trip(self):
+        pcm = bytes(range(256)) * 62 + bytes(16_000 - 256 * 62)
+        frame = encode_audio_frame(self.header, pcm)
+        self.assertEqual(decode_audio_frame(frame), (self.header, pcm))
+
+    def test_malformed_frames_are_refused(self):
+        frame = encode_audio_frame(self.header, bytes(16_000))
+        bad = {
+            "too short": b"\x00\x00",
+            "truncated payload": frame[:-2],
+            "extra payload": frame + b"\x00\x00",
+            "header length past the end": b"\x00\x01\x00\x00" + frame[4:],
+            "not an audio header": encode_audio_frame(self.header, bytes(16_000)).replace(
+                b'"kind":"audio_chunk"', b'"kind":"audio_chunX"'),
+        }
+        for name, data in bad.items():
+            with self.subTest(name):
+                with self.assertRaises(ValueError):
+                    decode_audio_frame(data)
+        with self.assertRaises(ValueError):
+            encode_audio_frame(self.header, bytes(15_998))  # 7_999 samples, header says 8_000
 
 
 if __name__ == "__main__":

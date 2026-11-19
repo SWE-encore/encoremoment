@@ -120,6 +120,8 @@ class SessionPanel(QWidget):
         self.counts.setText(
             f"{len(rows)} event(s) · received {s.received} · sent {s.sent}"
             + (f" · unsent {len(s.unsent)}" if s.unsent else "")
+            + (f" · audio chunks {s.audio_sent}" if s.audio_sent or s.audio_dropped else "")
+            + (f" ({s.audio_dropped} dropped)" if s.audio_dropped else "")
             + (f" · ignored {summary['ignored']}" if summary["ignored"] else "")
             + (f" · rejected {summary['rejected']}" if summary["rejected"] else "")
         )
