@@ -30,64 +30,37 @@ submission. This script accepts one Ed25519 public key and does not grant sudo.
 After your account and network access are configured:
 
 ```text
-ssh -i ~/.ssh/encoremoment USERNAME@15.165.31.24
+ssh -i ~/.ssh/encoremoment USERNAME@SERVER_HOST
 ```
+
+`SERVER_HOST` is the server's Tailscale address. This repository is public, so
+the address is shared in the Slack access thread rather than written here.
 
 The selected team network is **Tailscale**, with regular OpenSSH public-key
 authentication (not Tailscale SSH). Each member installs Tailscale and joins the
 team's tailnet using their own identity. The administrator must first authenticate
 the server and invite the team. The tailnet policy should permit project members
 to access the server on TCP 22 without granting unrelated device access.
-After setup, replace the public IP above with the server's Tailscale address.
 
-The public address may change after stop/start. The current AWS network rule
-only permits the administrator's original public IP; it has NOT been widened.
-Tailscale installation alone does not establish VPN connectivity: owner login,
-device enrollment, policy review and a client SSH test are still required.
+Until the VPN is in place, the AWS network rule only permits the administrator's
+own public IP on port 22; do not widen it. The public address may change after
+stop/start. Installing Tailscale alone does not establish VPN connectivity:
+owner login, device enrollment, policy review and a client SSH test are required.
 
-Current provisioning status:
+### VPN setup (administrator)
 
-- `chul`: this Windows PC's key registered; SSH and both models tested.
-- `FeGigabyte`: requested for the second Ubuntu laptop; awaiting its public key.
-- Other members: awaiting public keys and Tailscale invitations.
-
-### Handoff: 2026-11-19 KST
-
-The initial school-account login selected an unfamiliar tailnet. The server was
-explicitly logged out of that network. Do not request approval there. The owner
-has since signed into the Tailscale admin console with a personal account.
-At this checkpoint the server still reports `Logged out` / `NeedsLogin`.
-No working team VPN address has been verified; the address assigned during
-the earlier enrollment must not be used as the project endpoint.
-
-The second Ubuntu laptop has Tailscale installed (reported by the owner), but
-its login and server connectivity have not been verified. `FeGigabyte` has not
-yet been created because that laptop's public key has not been received.
-
-Resume in this order:
-
-1. Administrator: run `sudo tailscale up --hostname=encoremoment-dev
-   --accept-routes=false` on EC2 and complete registration in the personal
-   account's intended tailnet. Generate a fresh login link if needed; never
-   commit or post device-authentication links in the team channel.
-2. Ubuntu laptop: run `sudo tailscale up --hostname=fegigabyte-laptop`, open
-   its own login link, and select the same personal account/tailnet.
+1. On the server, run `sudo tailscale up --hostname=encoremoment-dev
+   --accept-routes=false` and complete registration in the team's tailnet.
+   Never commit or post device-authentication links in the team channel.
+2. Each member signs in to Tailscale on their device with their own identity
+   and accepts the invitation to the same tailnet.
 3. Verify `tailscale status` on both devices, the server's `tailscale ip -4`,
-   and any device approvals/access policy in the owner's admin console.
-4. Receive the Ubuntu laptop's Ed25519 public key and enroll `FeGigabyte`.
-   Test SSH and both model runners from that laptop through the VPN.
-5. Invite teammates individually, review the tailnet access policy, enroll
-   each device's public key, and verify their individual SSH connections.
-6. Update this guide with the verified VPN endpoint. Proceed to media contracts,
-   receiver API, reaction rules and PC client integration as separate work.
+   and device approvals and the access policy in the admin console.
+4. Enroll each device's Ed25519 public key with `enroll-user.sh` and confirm
+   SSH and both model runners work through the VPN.
 
-The EC2 instance remains running at this checkpoint; no stop, termination, or
-public SSH firewall expansion was performed. Model installation and normal
-administrator SSH remain available. The previous credit estimate is a snapshot,
-not a refreshed balance.
-
-On the Ubuntu laptop, generate its own key with comment `FeGigabyte-ubuntu`.
-After enrollment, use `ssh -i ~/.ssh/encoremoment FeGigabyte@TAILSCALE_IP`.
+Track who is enrolled and the current VPN state in Slack or Jira, not in this
+guide.
 
 Use a separate clone and feature branch per person:
 
@@ -98,8 +71,8 @@ cd encoremoment
 git switch -c feat/YOUR-TASK
 ```
 
-Private repository access requires your own GitHub authentication. Do not share
-a GitHub token or enable SSH agent forwarding by default. You can also develop
+The repository is public, so cloning needs no credentials; pushing requires
+your own GitHub authentication. Do not share a GitHub token or enable SSH agent forwarding by default. You can also develop
 locally and copy your working files to your own server workspace with SCP, or
 use VS Code Remote SSH with your individual account.
 

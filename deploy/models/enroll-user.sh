@@ -24,12 +24,19 @@ else
 fi
 account_home=$(getent passwd "$account" | cut -d: -f6)
 [[ $account_home == "/home/$account" ]] || exit 2
-install -d -m 700 -o "$account" -g "$account" "$account_home/.ssh"
-touch "$account_home/.ssh/authorized_keys"
-key=$(cat "$key_file")
-grep -qxF "$key" "$account_home/.ssh/authorized_keys" || printf '%s\n' "$key" >> "$account_home/.ssh/authorized_keys"
-chown "$account:$account" "$account_home/.ssh/authorized_keys"
-chmod 600 "$account_home/.ssh/authorized_keys"
+key=$(grep -ve '^$' "$key_file")
+# The home directory belongs to the team member, who may have replaced ~/.ssh or
+# authorized_keys with a symlink. Write them as that user so root never follows
+# such a link to a system file.
+runuser -u "$account" -- sh -c '
+  set -e
+  umask 077
+  mkdir -p "$1/.ssh"
+  touch "$1/.ssh/authorized_keys"
+  chmod 700 "$1/.ssh"
+  chmod 600 "$1/.ssh/authorized_keys"
+  grep -qxF "$2" "$1/.ssh/authorized_keys" || printf "%s\n" "$2" >> "$1/.ssh/authorized_keys"
+' sh "$account_home" "$key"
 install -d -m 755 /srv/encoremoment /srv/encoremoment/workspaces
 install -d -m 700 -o "$account" -g "$account" "/srv/encoremoment/workspaces/$account"
 echo "Enrolled $account; workspace: /srv/encoremoment/workspaces/$account"

@@ -49,17 +49,16 @@ to a hosted inference provider.
 Initial deployment on 2026-11-18:
 
 - Region: `ap-northeast-2` (Seoul)
-- Instance: `i-02162e7c5540b1c21`, `encoremoment-yamnet-dev`
 - Type: `c7i-flex.large`, 2 vCPU / 4 GiB memory
 - Ubuntu 24.04, 30 GiB gp3 root volume
 - Directory: `/home/ubuntu/encoremoment-models`
-- Initial public IP: `15.165.31.24` (may change after stop/start)
 - SSH user: `ubuntu`; port 22 is restricted to the configured client IP
 
-On the provisioning Windows PC:
+This repository is public, so the instance ID, address and key file names are
+kept in the team's Slack access thread instead. The administrator connects with:
 
-```powershell
-& C:/Windows/System32/OpenSSH/ssh.exe -i "$env:USERPROFILE/.ssh/encoremoment-yamnet-dev-20261118.pem" ubuntu@15.165.31.24
+```text
+ssh -i ADMIN_KEY.pem ubuntu@SERVER_HOST
 ```
 
 Keep private keys outside the repository. If the client public IP changes,
@@ -81,11 +80,9 @@ approximately 2.1 GiB and 970 MiB respectively. The root disk has 22 GiB free.
 
 These timings exclude model loading and are single-sample CPU measurements.
 Full JSON results, dependency snapshots and model hashes are saved on the host
-in `reports/` and locally in `artifacts/aws-model-deployment/reports/`.
+in `reports/` (not committed to Git).
 
 ## Credit estimate
-
-Using the previously observed $92.23 credit balance:
 
 | Resource | Assumed cost |
 |---|---:|
@@ -93,8 +90,9 @@ Using the previously observed $92.23 credit balance:
 | One public IPv4 | $0.005/hour |
 | 30 GiB gp3, project estimate of $0.0912/GiB-month | $2.736/month |
 
-At 730 hours/month this is approximately **$0.10451/hour**, **$76.29/month**, or
-**882.5 hours / 36.8 days** of continuous operation. This is a planning estimate,
+At 730 hours/month this is approximately **$0.10451/hour** or **$76.29/month**
+of continuous operation; divide the remaining credit shown in Billing by the
+hourly figure to estimate how long it lasts. This is a planning estimate,
 not a billing guarantee. The EBS rate is from the project estimate, not a fresh
 account price quote. It excludes other resources, outbound data, taxes, credits
 earned later, credit expiration, and the free-plan expiration date. Verify those
