@@ -78,8 +78,9 @@ artifacts/                  Local run outputs, excluded from version control
 ```
 
 See [architecture.md](docs/architecture.md) for the current data flow and boundaries for future work.
-`server/`, `inference/`, and `deploy/` are planned components required by the design, **not implemented services**.
-This integration does not add empty service skeletons or invent new APIs.
+`server/` and `inference/` remain planned services. The [EC2 model setup](deploy/models/README.md)
+installs YAMNet and MediaPipe Face Landmarker for command-line inference testing.
+It does not implement the session API, live media transport, or an inference worker service.
 
 ## Current behavior and remaining work
 

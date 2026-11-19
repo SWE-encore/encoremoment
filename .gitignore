@@ -6,3 +6,7 @@ client/samples/
 .pytest_cache/
 .venv-linux/
 artifacts/
+*.pem
+.env
+.env.*
+!.env.example
