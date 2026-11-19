@@ -71,6 +71,16 @@ def test_lost_samples_restart_the_timestamps():
     assert [c[1] for c in session.chunks] == [0, 2_500]
 
 
+def test_the_first_samples_after_the_device_starts_are_discarded():
+    session, clock = FakeSession(), Clock(0)
+    mic = LiveMicrophone(session, clock=clock)
+    mic.device_started(settle_ms=150)
+    feed(mic, clock, 7)  # 0.7 s read; the first 0.15 s is the device settling
+    # The kept audio starts at 0.15 s and its timestamps say so.
+    assert session.chunks == [(16_000, 150, "off")]
+    assert len(mic.recording) == 16_000
+
+
 def test_exact_zeros_from_the_device_are_counted_as_a_muted_input():
     session, clock = FakeSession(), Clock(0)
     mic = LiveMicrophone(session, clock=clock)

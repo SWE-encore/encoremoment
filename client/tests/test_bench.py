@@ -153,6 +153,13 @@ def test_unreadable_files_are_reported_in_the_window(app, tmp_path):
         win.close()
 
 
+def test_the_level_meter_ignores_a_dc_offset():
+    from encore_client.bench.window import _db
+
+    tone = [round(8_000 * math.sin(2 * math.pi * 440 * i / RATE)) for i in range(RATE)]
+    assert abs(_db(struct.pack(f"<{RATE}h", *tone)) - _db(struct.pack(f"<{RATE}h", *(v + 6_700 for v in tone)))) < 0.01
+
+
 def test_a_recording_is_saved_as_contract_format_wav(app, tmp_path):
     win = BenchWindow()
     try:

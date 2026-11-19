@@ -479,12 +479,15 @@ def _rows(events, origin_ms: int) -> list[tuple[str, ...]]:
 
 
 def _db(pcm: bytes) -> float:
+    """Level without the DC offset, like the server's rms_db: an offset is not sound."""
     samples = array("h")
     samples.frombytes(pcm[: len(pcm) // 2 * 2])
     if not samples:
         return -120.0
-    rms = math.sqrt(sum(v * v for v in samples) / len(samples)) / 32768
-    return 20 * math.log10(max(rms, 1e-6))
+    n = len(samples)
+    mean = sum(samples) / n
+    variance = max(sum(v * v for v in samples) / n - mean * mean, 0.0)
+    return 20 * math.log10(max(math.sqrt(variance) / 32768, 1e-6))
 
 
 def _escape(text: str) -> str:

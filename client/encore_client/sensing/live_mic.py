@@ -18,6 +18,7 @@ from ..session.contract import AUDIO_RATE
 
 CHUNK_MS = 500
 RESYNC_MS = 250  # timestamps this far from the clock: samples were lost, start a new run
+SETTLE_MS = 150  # a device's first samples can be a full-scale pop (measured: ~25 ms on a laptop microphone)
 MAX_RECORDING_S = 600
 
 
@@ -34,9 +35,20 @@ class LiveMicrophone:
         self._clock = clock
         self._buf = bytearray()
         self._run: list[int] | None = None  # [generation, first sample ms, bytes taken from the run]
+        self._skip = 0  # bytes still to discard after the device started
+
+    def device_started(self, settle_ms: int = SETTLE_MS) -> None:
+        """The device just opened: discard its first ``settle_ms`` of audio."""
+        self._skip = AUDIO_RATE * settle_ms // 1000 * 2
 
     def feed(self, data: bytes) -> int:
         """Audio just read from the device, ending now. Returns how many chunks went out."""
+        if self._skip:
+            dropped = min(self._skip, len(data))
+            self._skip -= dropped
+            data = data[dropped:]  # what is left still ends now, so its timestamps hold
+            if not data:
+                return 0
         self.last_pcm = data
         self.zero_ms = 0 if any(data) else self.zero_ms + _ms(len(data))
         mic = self.session.view.sensors["microphone"]
@@ -92,6 +104,7 @@ class QtAudioInput:
         self._io = self.source.start()
         if self._io is None:
             raise RuntimeError(f"could not open {self.device.description()}")
+        self.mic.device_started()
         self._io.readyRead.connect(self._read)
 
     def stop(self) -> None:
