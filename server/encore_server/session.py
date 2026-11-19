@@ -36,7 +36,12 @@ class ServerSession:
         *,
         clock: Callable[[], float] = time.monotonic,
         idle_s: float = IDLE_S,
+        on_frame: Callable[[Frame], None] | None = None,
     ) -> None:
+        """``on_frame`` sees every analysed frame (scores, intensity) before the
+        detector does: a debugging view for tools such as the test bench. It is
+        not part of the contract and nothing is sent to the PC for it.
+        """
         self.session_id = session_id
         self.model = model
         self.view = SessionView(session_id)
@@ -49,6 +54,7 @@ class ServerSession:
         self.idle_s = idle_s
         self._clock = clock
         self._last_audio: float | None = None
+        self._on_frame = on_frame
 
     def results_after(self, cursor: int) -> list[dict[str, Any]]:
         """Committed event changes after ``cursor``, for a (re)connecting PC."""
@@ -90,6 +96,8 @@ class ServerSession:
         for w in self.windows.add(header, pcm):
             frame = Frame(w.start_ms, w.end_ms, self.model(w.pcm), self.baseline.strength(rms_db(w.pcm)),
                           w.generation, self._camera_generation(), w.aec)
+            if self._on_frame is not None:
+                self._on_frame(frame)
             out += self._commit(self.detector.push(frame))
         return out
 

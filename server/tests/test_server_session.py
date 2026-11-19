@@ -214,6 +214,17 @@ def test_idle_and_end_close_open_events():
     assert s.on_idle() == [] and s.end() == []
 
 
+def test_on_frame_sees_every_analysed_window():
+    seen = []
+    s, pc = ServerSession(SID, LoudnessModel(), on_frame=seen.append), Pc()
+    s.on_text(pc.control("microphone", True, 1))
+    stream(s, pc, 1, 1_000, [QUIET] * 4 + [LOUD] * 4)
+    assert len(seen) == 7  # 4 s of audio: windows start every 0.48 s and need 0.975 s
+    assert [f.start_ms for f in seen] == [1_000 + 480 * i for i in range(7)]
+    assert seen[0].scores["laughter"] == 0.0 and seen[-1].scores["laughter"] == 1.0
+    assert all(f.microphone == 1 for f in seen)
+
+
 def test_results_replay_from_a_cursor():
     s, pc = new_session(), Pc()
     s.on_text(pc.control("microphone", True, 1))

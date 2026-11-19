@@ -11,7 +11,9 @@ It is a first working server, not the full design: sessions live in memory for t
 
 ## Run
 
-From the repository root, because the server loads `contracts/` from the checkout, like the client:
+The quickest way to try it is the test bench (`client/README.md`, "Test bench"): one window that runs this server inside the app and shows the model's scores live, with a microphone or an audio file.
+
+To run the server on its own, from the repository root, because the server loads `contracts/` from the checkout, like the client:
 
 ```sh
 python -m venv .venv-server

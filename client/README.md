@@ -82,6 +82,30 @@ cd client
 ../.venv/bin/python -m encore_client --headless --session-id ses-sample-07 --mic-wav laugh.wav --timeout 5
 ```
 
+## Test bench
+
+`python -m encore_client.bench` tries reaction detection without the player, a second terminal or a server account. One window starts a session server inside the app, streams audio from the PC microphone or a file, and shows the model's scores live next to the events the PC receives through the normal contract path.
+
+```sh
+cd client
+../.venv/bin/python -m encore_client.bench
+```
+
+- **Audio in.** The default microphone, or any audio or video file (whatever ffmpeg reads is converted to 16 kHz mono). Files play at 1×, 4× or 16×, and an event's content time is its position in the file. Nothing is echo-cancelled, so use headphones if anything else is playing.
+- **Server.** Built-in, with the loudness stand-in (any loud sound counts as laughter) or YAMNet; or the URL of a server started separately (`python -m encore_server`, possibly through an SSH tunnel). Scores are visible only with the built-in server; events show either way.
+- **Trigger levels.** The detector's level per reaction, applied at the next Start. Results from non-default levels say so in `source.config`, for example `bench gasp=0.30 laughter=0.30 scream=0.40`.
+- **Plot.** The last 30 s: each reaction's score (solid), room intensity (dotted), trigger levels (dashed), and every received event as a band from its start to its end.
+- **Stop** turns the microphone off first, so the server finishes open events (R8), then ends the session. **Save recording…** keeps the microphone audio of the last run as a contract-format WAV, to replay it with other levels or to share with the model owner.
+
+YAMNet needs TensorFlow in the same environment (about 2 GB installed; the model downloads once on first use):
+
+```sh
+../.venv/bin/python -m pip install -r ../server/requirements-yamnet.txt
+../.venv/bin/python -m encore_client.bench --model yamnet
+```
+
+Other options: `--server URL`, `--file PATH`, `--speed 1|4|16`.
+
 ## Test
 
 ```sh
@@ -106,6 +130,8 @@ The player tests generate their own clips with ffmpeg, play them headless, and c
 | `encore_client/session/fake_server.py` | Plays the server side of a contract sample (development only) |
 | `encore_client/session/panel.py` | PySide6 panel: Start/End, connection status, event table |
 | `encore_client/session/contract.py` | Loads the shared receiver from `contracts/reference/` |
+| `encore_client/sensing/wav_mic.py`, `live_mic.py` | Stand-in microphones: a WAV file in real time, or the raw PC microphone (no AEC) |
+| `encore_client/bench/` | Test bench: built-in server, live scores plot, events (development only) |
 | `tools/make_test_video.sh` | Generates test clips with ffmpeg (nothing copyrighted is committed) |
 
 ## Known limits and risks
