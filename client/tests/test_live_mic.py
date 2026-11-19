@@ -5,12 +5,14 @@ from types import SimpleNamespace
 import pytest
 
 from encore_client.sensing.live_mic import LiveMicrophone
+from encore_client.session.session import Conn
 
 READ = bytes(3_200)  # 0.1 s, a typical device read
 
 
 class FakeSession:
     def __init__(self, enabled=True, generation=1):
+        self.state = Conn.CONNECTED
         self.mic = SimpleNamespace(enabled=enabled, generation=generation)
         self.view = SimpleNamespace(sensors={"microphone": self.mic})
         self.chunks = []
@@ -104,3 +106,87 @@ def test_qt_input_opens_the_default_device_in_the_contract_format():
             QtAudioInput(LiveMicrophone(FakeSession()))
         return
     QtAudioInput(LiveMicrophone(FakeSession()))  # opened only on start(): nothing is recorded here
+
+
+@pytest.mark.parametrize("state", [Conn.CONNECTING, Conn.DISCONNECTED, Conn.ENDED])
+def test_late_device_reads_are_not_recorded_outside_a_connection(state):
+    session, clock = FakeSession(), Clock(10_000)
+    mic = LiveMicrophone(session, clock=clock)
+    feed(mic, clock, 3)  # an incomplete chunk must also be discarded
+    session.state = state
+    feed(mic, clock, 5)
+    assert not mic.recording and not session.chunks
+    session.state = Conn.CONNECTED
+    feed(mic, clock, 5)
+    assert session.chunks == [(16_000, 10_800, "off")]
+
+
+def audio_format(rate, channels, kind):
+    from PySide6.QtMultimedia import QAudioFormat
+    fmt = QAudioFormat()
+    fmt.setSampleRate(rate)
+    fmt.setChannelCount(channels)
+    fmt.setSampleFormat(getattr(QAudioFormat.SampleFormat, kind))
+    return fmt
+
+
+@pytest.mark.parametrize("kind,dtype,values", [
+    ("UInt8", "u1", [0, 128, 255]),
+    ("Int16", "<i2", [-32768, 0, 32512]),
+    ("Int32", "<i4", [-2147483648, 0, 2130706432]),
+    ("Float", "<f4", [-1, 0, 0.9921875]),
+])
+def test_native_sample_formats_and_partial_frames(kind, dtype, values):
+    import numpy as np
+    from encore_client.sensing.live_mic import AudioConverter
+    converter = AudioConverter(audio_format(16_000, 2, kind))
+    raw = np.repeat(np.array(values, dtype=dtype), 2).tobytes()
+    # Real device reads need not end on sample or channel boundaries.
+    output = b"".join(converter.convert(raw[i:i + 3]) for i in range(0, len(raw), 3))
+    assert np.frombuffer(output, dtype="<i2").tolist() == [-32768, 0, 32512]
+
+
+@pytest.mark.parametrize("rate", [44_100, 48_000])
+def test_resampling_preserves_tone_time_and_rejects_aliases(rate):
+    import numpy as np
+    from encore_client.sensing.live_mic import AudioConverter
+    fmt = audio_format(rate, 2, "Float")
+    t = np.arange(rate * 2) / rate
+    low = np.sin(2 * np.pi * 440 * t) * 0.5
+    high = np.sin(2 * np.pi * 12_000 * t) * 0.5
+    outputs = []
+    for signal in (low, high):
+        converter = AudioConverter(fmt)
+        # One channel carries the tone, the other is silent: also tests downmix.
+        raw = np.column_stack((signal, np.zeros_like(signal))).astype("<f4").tobytes()
+        converted = b"".join(converter.convert(raw[i:i + 4093]) for i in range(0, len(raw), 4093))
+        output = np.frombuffer(converted, dtype="<i2").astype(float) / 32768
+        assert abs(len(output) + converter.delay_ms * 16 - 32_000) <= 8
+        outputs.append(output[1000:-1000])
+    assert 0.17 < np.sqrt(np.mean(outputs[0] ** 2)) < 0.18
+    assert np.sqrt(np.mean(outputs[1] ** 2)) < 0.002
+
+
+def test_resampler_delay_does_not_shift_capture_timestamps():
+    session, clock = FakeSession(), Clock(10_600)
+    mic = LiveMicrophone(session, clock=clock)
+    mic.feed(bytes(16_000), end_ms=10_500)
+    assert session.chunks == [(16_000, 10_000, "off")]
+
+
+def test_native_format_is_used_when_16khz_is_unsupported():
+    from PySide6.QtWidgets import QApplication
+    from encore_client.sensing.live_mic import QtAudioInput
+    app = QApplication.instance() or QApplication([])
+    fmt = audio_format(48_000, 2, "Float")
+    class NativeOnly:
+        def isNull(self): return False
+        def isFormatSupported(self, candidate): return candidate == fmt
+        def preferredFormat(self): return fmt
+        def description(self): return "Native-only test microphone"
+    # Use a fake QAudioSource so no physical microphone is opened.
+    from unittest.mock import patch
+    with patch("PySide6.QtMultimedia.QAudioSource") as source:
+        QtAudioInput(LiveMicrophone(FakeSession()), NativeOnly())
+        assert source.call_args.args[1] == fmt
+        source.return_value.setBufferSize.assert_called_once_with(192_000)

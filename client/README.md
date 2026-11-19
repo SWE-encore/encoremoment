@@ -108,6 +108,16 @@ YAMNet needs TensorFlow in the same environment (about 2 GB installed; the model
 
 Other options: `--server URL`, `--file PATH`, `--speed 1|4|16`.
 
+Microphones that cannot supply 16 kHz mono PCM16 use their supported native
+format instead. The bench downmixes and resamples it to the contract format
+with NumPy and SoXR (included in `requirements-dev.txt` via the client
+requirements). Streaming conversion preserves filter state between device
+reads and accounts for resampler delay in capture timestamps.
+
+Stop closes the capture device immediately while waiting for final events.
+A lost server connection also stops capture, preserves the last recording for
+saving, and leaves the disconnect reason visible. Press Start to begin a new run.
+
 ## Test
 
 ```sh

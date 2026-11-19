@@ -181,3 +181,43 @@ def test_yamnet_without_tensorflow_explains_what_to_install(app):
         assert not win.start_btn.isEnabled()
     finally:
         win.close()
+
+
+@pytest.mark.parametrize("disconnect", [True, False])
+def test_capture_stops_on_disconnect_or_stop_and_recording_is_preserved(app, disconnect):
+    from encore_client.session.session import Session
+    from encore_client.sensing.live_mic import LiveMicrophone
+    from unittest.mock import Mock
+
+    win = BenchWindow()
+    try:
+        win.timer.stop()
+        session = Session("ws://127.0.0.1:1")
+        session.set_sensor("microphone", True)
+        session.state = Conn.CONNECTED
+        session._transport = Mock()
+        session._transport.poll.return_value = [("closed", "connection lost")] if disconnect else []
+        win.session = session
+        win.source = LiveMicrophone(session)
+        win.source.recording.extend(b"\x01\x00" * 8000)
+        win._began = True
+        device = win.qt_input = Mock()
+        if disconnect:
+            win.tick()
+            assert session.state is Conn.DISCONNECTED  # keep the failure visible
+        else:
+            win.stop()
+            assert win._stop_at is not None  # FINAL grace period continues without capturing
+        device.stop.assert_called_once()
+        assert win.qt_input is None
+        assert not session.view.sensors["microphone"].enabled
+        before = bytes(win.source.recording)
+        win.source.feed(bytes(16000))  # an already queued device callback
+        assert win.recording == before == bytes(win.source.recording)
+        win.stop()  # safe even after a disconnect / repeated Stop
+        device.stop.assert_called_once()
+        if disconnect:
+            assert win.save_btn.isEnabled()
+            assert "connection lost" in win.status.text()
+    finally:
+        win.close()

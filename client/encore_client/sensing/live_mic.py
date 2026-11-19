@@ -15,6 +15,7 @@ from typing import Callable
 
 from ..clock import monotonic_ms
 from ..session.contract import AUDIO_RATE
+from ..session.session import Conn
 
 CHUNK_MS = 500
 RESYNC_MS = 250  # timestamps this far from the clock: samples were lost, start a new run
@@ -41,8 +42,13 @@ class LiveMicrophone:
         """The device just opened: discard its first ``settle_ms`` of audio."""
         self._skip = AUDIO_RATE * settle_ms // 1000 * 2
 
-    def feed(self, data: bytes) -> int:
+    def feed(self, data: bytes, *, end_ms: int | None = None) -> int:
         """Audio just read from the device, ending now. Returns how many chunks went out."""
+        mic = self.session.view.sensors["microphone"]
+        if not mic.enabled or self.session.state is not Conn.CONNECTED:
+            self._buf.clear()
+            self._run = None
+            return 0
         if self._skip:
             dropped = min(self._skip, len(data))
             self._skip -= dropped
@@ -51,12 +57,7 @@ class LiveMicrophone:
                 return 0
         self.last_pcm = data
         self.zero_ms = 0 if any(data) else self.zero_ms + _ms(len(data))
-        mic = self.session.view.sensors["microphone"]
-        if not mic.enabled:
-            self._buf.clear()  # microphone off: nothing is captured (R8)
-            self._run = None
-            return 0
-        now = self._clock()
+        now = self._clock() if end_ms is None else end_ms
         if self._run is not None:
             expected_end = self._run[1] + _ms(self._run[2] + len(self._buf) + len(data))
             if self._run[0] != mic.generation or abs(expected_end - now) > RESYNC_MS:
@@ -79,6 +80,50 @@ class LiveMicrophone:
         return sent
 
 
+class AudioConverter:
+    """Convert Qt PCM to mono PCM16, preserving resampler state across reads."""
+
+    def __init__(self, fmt) -> None:
+        import numpy as np
+        import soxr
+        from PySide6.QtMultimedia import QAudioFormat
+
+        formats = {
+            QAudioFormat.SampleFormat.UInt8: ("u1", 128.0, 128.0),
+            QAudioFormat.SampleFormat.Int16: ("<i2", 0.0, 32768.0),
+            QAudioFormat.SampleFormat.Int32: ("<i4", 0.0, 2147483648.0),
+            QAudioFormat.SampleFormat.Float: ("<f4", 0.0, 1.0),
+        }
+        if fmt.sampleFormat() not in formats or fmt.sampleRate() <= 0 or fmt.channelCount() <= 0:
+            raise RuntimeError("unsupported microphone PCM format")
+        self._np = np
+        self._dtype, self._offset, self._scale = formats[fmt.sampleFormat()]
+        self._channels = fmt.channelCount()
+        self._frame_bytes = np.dtype(self._dtype).itemsize * self._channels
+        self._pending = b""
+        self._resampler = (soxr.ResampleStream(fmt.sampleRate(), AUDIO_RATE, 1, dtype="float32")
+                           if fmt.sampleRate() != AUDIO_RATE else None)
+
+    @property
+    def delay_ms(self) -> int:
+        return round(self._resampler.delay() * 1000 / AUDIO_RATE) if self._resampler else 0
+
+    def convert(self, data: bytes) -> bytes:
+        np = self._np
+        data = self._pending + data
+        n = len(data) // self._frame_bytes * self._frame_bytes
+        self._pending = data[n:]
+        if not n:
+            return b""
+        samples = np.frombuffer(data[:n], dtype=self._dtype).astype(np.float32)
+        samples = (samples - self._offset) / self._scale
+        mono = samples.reshape(-1, self._channels).mean(axis=1)
+        mono = np.nan_to_num(mono, nan=0.0, posinf=1.0, neginf=-1.0)
+        if self._resampler:
+            mono = self._resampler.resample_chunk(mono)
+        return np.clip(np.rint(mono * 32768.0), -32768, 32767).astype("<i2").tobytes()
+
+
 class QtAudioInput:
     """Reads a Qt audio input in the contract's format and feeds a LiveMicrophone."""
 
@@ -93,11 +138,14 @@ class QtAudioInput:
         fmt.setChannelCount(1)
         fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
         if not device.isFormatSupported(fmt):
-            raise RuntimeError(f"{device.description()} cannot record 16 kHz mono 16-bit audio")
+            fmt = device.preferredFormat()
+        if not device.isFormatSupported(fmt):
+            raise RuntimeError(f"{device.description()} has no supported capture format")
+        self.converter = AudioConverter(fmt)
         self.mic = mic
         self.device = device
         self.source = QAudioSource(device, fmt)
-        self.source.setBufferSize(AUDIO_RATE * 2 // 2)  # 0.5 s
+        self.source.setBufferSize(fmt.bytesForDuration(500_000))  # 0.5 s in device format
         self._io = None
 
     def start(self) -> None:
@@ -108,14 +156,18 @@ class QtAudioInput:
         self._io.readyRead.connect(self._read)
 
     def stop(self) -> None:
-        self.source.stop()
+        if self._io is not None:
+            self._io.readyRead.disconnect(self._read)
         self._io = None
+        self.source.stop()
 
     def _read(self) -> None:
         if self._io is not None:
             data = self._io.readAll().data()
             if data:
-                self.mic.feed(bytes(data))
+                pcm = self.converter.convert(bytes(data))
+                if pcm:
+                    self.mic.feed(pcm, end_ms=self.mic._clock() - self.converter.delay_ms)
 
 
 def _ms(n_bytes: int) -> int:

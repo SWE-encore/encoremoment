@@ -312,27 +312,34 @@ class BenchWindow(QMainWindow):
                 self.qt_input.start()
             except RuntimeError as exc:
                 self.error = str(exc)
-                self.qt_input = None
                 self.stop()
 
     def stop(self) -> None:
         """Turn the microphone off first, so the server finishes open events (R8), then end."""
-        if not self.running or self._stop_at is not None:
+        if self._stop_at is not None:
+            return
+        self._stop_capture()
+        if not self.running:
+            self.refresh()
             return
         if self.session.state is Conn.CONNECTED:
-            self.session.set_sensor("microphone", False)
             self._stop_at = time.monotonic() + STOP_GRACE_S
         else:
             self._finish()
         self.refresh()
 
-    def _finish(self) -> None:
-        self._stop_at = None
+    def _stop_capture(self) -> None:
         if self.qt_input is not None:
             self.qt_input.stop()
             self.qt_input = None
+        if self.session is not None and self.session.view.sensors["microphone"].enabled:
+            self.session.set_sensor("microphone", False)
         if isinstance(self.source, LiveMicrophone):
             self.recording = bytes(self.source.recording)
+
+    def _finish(self) -> None:
+        self._stop_at = None
+        self._stop_capture()
         if self.session is not None:
             self.session.end()
 
@@ -377,6 +384,10 @@ class BenchWindow(QMainWindow):
         s = self.session
         if s is not None:
             s.poll()
+            if s.state in (Conn.DISCONNECTED, Conn.ENDED) and (
+                    self.qt_input is not None or s.view.sensors["microphone"].enabled):
+                self._stop_at = None
+                self._stop_capture()
             if not self._began and s.state is Conn.CONNECTED and self._stop_at is None:
                 self._begin()
             if isinstance(self.source, WavMicrophone) and self._began and self.running:

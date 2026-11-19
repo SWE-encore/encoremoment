@@ -179,7 +179,7 @@ def test_live_cli_turns_microphone_on_at_start(tmp_path):
         port = s.getsockname()[1]
     log = tmp_path / "delivery.jsonl"
     main(["--headless", "--server", f"ws://127.0.0.1:{port}", "--log", str(log), "--timeout", "5"])
-    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     assert {"what": "unsent", "kind": "control_update"}.items() <= next(
         e for e in entries if e["what"] == "unsent").items()
 

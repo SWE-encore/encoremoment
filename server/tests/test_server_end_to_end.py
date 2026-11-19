@@ -103,6 +103,8 @@ def test_a_laugh_in_the_audio_comes_back_as_a_mapped_event(server, tmp_path):
     assert pb["timecode_end_ms"] == 60_000 + cap["end_ms"] - 9_500
 
     server_side = app.sessions["ses-e2e-laugh"]
+    # FINAL can arrive before the trailing silence has finished uploading.
+    wait(session, lambda: server_side.audio_chunks == mic.sent)
     assert server_side.audio_chunks == mic.sent == 16
     assert server_side.view.sensors["microphone"].generation == 1
     assert server_side.invalid == 0
