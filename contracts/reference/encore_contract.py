@@ -11,6 +11,8 @@ Rules implemented here are written out in contracts/README.md.
 
 from __future__ import annotations
 
+import json
+import struct
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
@@ -21,9 +23,47 @@ POST_MS = 10_000  # Q: context after the trigger
 EXTEND_MS = 5_000  # E: extension per re-fire
 MAX_MS = 60_000  # L: maximum clip length
 
-PC_TO_SERVER = {"playback_anchor", "control_update"}
+PC_TO_SERVER = {"playback_anchor", "control_update", "audio_chunk"}
 SERVER_TO_PC = {"event_update", "control_ack"}
 IMMUTABLE_EVENT_FIELDS = (("reaction", "type"), ("generations",), ("capture", "start_ms"))
+
+# Audio upload: one binary frame = 4-byte big-endian header length, the UTF-8
+# JSON audio_chunk header, then PCM signed 16-bit little-endian mono samples.
+AUDIO_RATE = 16_000
+AUDIO_MAX_SAMPLES = 16_000  # 1 second per chunk
+_AUDIO_MAX_HEADER = 4_096
+_LEN = struct.Struct("!I")
+
+
+def encode_audio_frame(header: dict[str, Any], pcm: bytes) -> bytes:
+    """Build the binary WebSocket payload for one audio chunk."""
+    if header.get("kind") != "audio_chunk":
+        raise ValueError("not an audio_chunk header")
+    if len(pcm) != 2 * header.get("samples", -1) or not 0 < len(pcm) <= 2 * AUDIO_MAX_SAMPLES:
+        raise ValueError(f"payload is {len(pcm)} bytes; header says {header.get('samples')} samples")
+    head = json.dumps(header, ensure_ascii=False, separators=(",", ":")).encode()
+    if len(head) > _AUDIO_MAX_HEADER:
+        raise ValueError("audio_chunk header too large")
+    return _LEN.pack(len(head)) + head + pcm
+
+
+def decode_audio_frame(data: bytes) -> tuple[dict[str, Any], bytes]:
+    """Split a binary frame into (header, pcm). Raises ValueError if malformed."""
+    if len(data) < _LEN.size:
+        raise ValueError("frame too short")
+    (n,) = _LEN.unpack_from(data)
+    if not 0 < n <= _AUDIO_MAX_HEADER or len(data) < _LEN.size + n:
+        raise ValueError("bad header length")
+    try:
+        header = json.loads(data[_LEN.size : _LEN.size + n])
+    except ValueError as exc:
+        raise ValueError(f"header is not JSON: {exc}") from None
+    if not isinstance(header, dict) or header.get("kind") != "audio_chunk":
+        raise ValueError("binary frame without an audio_chunk header")
+    pcm = data[_LEN.size + n :]
+    if not isinstance(header.get("samples"), int) or len(pcm) != 2 * header["samples"]:
+        raise ValueError(f"payload is {len(pcm)} bytes; header says {header.get('samples')} samples")
+    return header, pcm
 
 
 @dataclass
@@ -87,6 +127,9 @@ class SessionView:
     next_cursor: int = 1
     buffered: dict[int, dict[str, Any]] = field(default_factory=dict)
     seen_controls: dict[str, dict[str, Any]] = field(default_factory=dict)
+    last_audio_chunk: dict[int, int] = field(default_factory=dict)  # microphone generation -> chunk
+    audio_chunks: int = 0
+    audio_gaps: int = 0  # chunks skipped: audio the PC dropped
     ignored: Counter = field(default_factory=Counter)
     rejected: Counter = field(default_factory=Counter)
 
@@ -132,6 +175,19 @@ class SessionView:
                 self.camera_intervals.append(CameraInterval(msg["generation"], msg["capture_ms"]))
             elif self.camera_intervals and self.camera_intervals[-1].off_ms is None:
                 self.camera_intervals[-1].off_ms = msg["capture_ms"]
+
+    def _on_audio_chunk(self, msg: dict[str, Any]) -> None:
+        # R8: audio is only uploaded while the microphone is on, in its current generation.
+        mic = self.sensors["microphone"]
+        if not mic.enabled or msg["generation"] != mic.generation:
+            raise ProtocolError("stale_audio_generation")
+        last = self.last_audio_chunk.get(msg["generation"], -1)
+        if msg["chunk"] <= last:
+            self.ignored["duplicate_audio"] += 1
+            return
+        self.audio_gaps += msg["chunk"] - last - 1
+        self.last_audio_chunk[msg["generation"]] = msg["chunk"]
+        self.audio_chunks += 1
 
     # ---- server -> PC ------------------------------------------------------
 

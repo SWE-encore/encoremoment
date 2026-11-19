@@ -3,7 +3,8 @@
 A ``Session`` owns one connection to the server's result stream and the PC's
 view of that session. It
 
-- sends the PC's own messages (playback anchors, sensor controls),
+- sends the PC's own messages (playback anchors, sensor controls, microphone
+  audio in binary frames),
 - applies every server message through the shared contract receiver, so a
   result delivered twice still gives one event (contracts/README.md),
 - tracks the connection and reports when it drops (R9, R11), and
@@ -34,7 +35,7 @@ from typing import Any, Callable, Protocol
 
 from ..clock import monotonic_ms
 from . import ws
-from .contract import PC_TO_SERVER, SessionView
+from .contract import AUDIO_MAX_SAMPLES, PC_TO_SERVER, SessionView, encode_audio_frame
 
 STREAM_PATH = "/v1/sessions/{session_id}/stream"
 SENSORS = ("camera", "microphone", "aec")
@@ -62,7 +63,7 @@ class Conn(str, Enum):
 
 class Transport(Protocol):
     def start(self) -> None: ...
-    def send(self, text: str) -> bool: ...
+    def send(self, data: str | bytes) -> bool: ...  # str: text frame, bytes: binary frame
     def poll(self) -> list[tuple[str, Any]]: ...
     def close(self) -> None: ...
 
@@ -96,12 +97,12 @@ class WsTransport:
     def start(self) -> None:
         self._thread.start()
 
-    def send(self, text: str) -> bool:
+    def send(self, data: str | bytes) -> bool:
         conn = self._ws
         if conn is None or conn.closed:
             return False
         try:
-            conn.send(text)
+            conn.send(data)
             return True
         except ws.WsClosed:
             return False
@@ -217,11 +218,15 @@ class Session:
         self.received_at_open = 0
         self.sent = 0
         self.unsent: list[dict[str, Any]] = []
+        self.audio_sent = 0
+        self.audio_dropped = 0  # captured while disconnected: dropped, never sent late (R9)
         self.bad_messages = 0
         self.last_anchor: dict[str, Any] | None = None
         self.microphone_on_start = microphone_on_start
         self.log = log or DeliveryLog(None, clock)
         self._seq = 0
+        self._audio_generation: int | None = None
+        self._audio_chunk = 0
         self._clock = clock
         self._factory = transport_factory
         self._transport: Transport | None = None
@@ -258,10 +263,74 @@ class Session:
         """
         if msg.get("kind") not in PC_TO_SERVER:
             raise ValueError(f"not a PC-to-server message: {msg.get('kind')!r}")
+        if msg.get("kind") == "audio_chunk":
+            raise ValueError("audio goes in a binary frame: use send_audio()")
         if msg.get("session_id") != self.session_id:
             raise ValueError("message belongs to another session")
         self.view.receive("pc->server", msg)
         return self._transmit(msg)
+
+    def send_audio(self, pcm: bytes, capture_ms: int, aec: str = "off") -> bool:
+        """Send one chunk of microphone audio: 16 kHz mono PCM16 little-endian.
+
+        ``capture_ms`` is the capture time of the first sample; ``aec`` is the
+        echo cancellation status of these samples. Returns True if it went out.
+
+        Audio only flows while the microphone is on, tagged with its current
+        generation (R8). Audio captured while the connection is down is dropped,
+        not queued: the server must never analyse stale audio as live (R9). Its
+        chunk number is still used up, so the server can see the gap.
+        """
+        if len(pcm) % 2 or not 0 < len(pcm) <= 2 * AUDIO_MAX_SAMPLES:
+            raise ValueError(f"need 1..{AUDIO_MAX_SAMPLES} PCM16 samples, got {len(pcm)} bytes")
+        mic = self.view.sensors["microphone"]
+        if not mic.enabled:
+            return False
+        if self._audio_generation != mic.generation:
+            self._audio_generation, self._audio_chunk = mic.generation, 0
+        chunk = self._audio_chunk
+        self._audio_chunk += 1
+        if self.state is not Conn.CONNECTED:
+            self.audio_dropped += 1
+            return False
+        header = {
+            "schema": "encore.v1",
+            "kind": "audio_chunk",
+            "session_id": self.session_id,
+            "seq": self._next_seq(),
+            "capture_ms": capture_ms,
+            "generation": mic.generation,
+            "chunk": chunk,
+            "sample_rate": 16000,
+            "channels": 1,
+            "encoding": "pcm_s16le",
+            "samples": len(pcm) // 2,
+            "aec": aec,
+        }
+        return self.send_audio_frame(header, pcm)
+
+    def send_audio_frame(self, header: dict[str, Any], pcm: bytes) -> bool:
+        """Send a ready-made audio_chunk header with its samples.
+
+        ``send_audio`` builds the header; the scenario driver replays the
+        samples' headers through here. Refused while the microphone is off or
+        for another generation (R8).
+        """
+        if header.get("kind") != "audio_chunk" or header.get("session_id") != self.session_id:
+            raise ValueError("not an audio_chunk for this session")
+        mic = self.view.sensors["microphone"]
+        if not mic.enabled or header.get("generation") != mic.generation:
+            return False
+        frame = encode_audio_frame(header, pcm)
+        ok = self.state is Conn.CONNECTED and self._transport is not None
+        ok = ok and self._transport.send(frame)
+        if ok:
+            self.view.receive("pc->server", header)
+            self.audio_sent += 1
+            self.log.write("out", msg=header)
+        else:
+            self.audio_dropped += 1
+        return ok
 
     def set_sensor(
         self,
@@ -370,8 +439,12 @@ class Session:
                     self._set_state(Conn.DISCONNECTED)
         return changed
 
-    def _on_message(self, text: str) -> None:
+    def _on_message(self, text: str | bytes) -> None:
         self.received += 1
+        if isinstance(text, bytes):  # the server sends JSON text only
+            self.bad_messages += 1
+            self.log.write("in_bad", text=f"<binary frame, {len(text)} bytes>")
+            return
         try:
             msg = json.loads(text)
         except ValueError:
@@ -402,6 +475,8 @@ class Session:
             "received": self.received,
             "sent": self.sent,
             "unsent": len(self.unsent),
+            "audio_sent": self.audio_sent,
+            "audio_dropped": self.audio_dropped,
             "bad_messages": self.bad_messages,
         }
 
@@ -475,7 +550,10 @@ class ScenarioDriver:
         arrived = self.session.received - self.session.received_at_open
         while not self.done:
             step = self.steps[self.i]
-            if step["dir"] == "pc->server":
+            if step["dir"] == "pc->server" and step["msg"]["kind"] == "audio_chunk":
+                # Samples list audio headers only; send silence of that length.
+                self.session.send_audio_frame(step["msg"], bytes(2 * step["msg"]["samples"]))
+            elif step["dir"] == "pc->server":
                 self.session.send(step["msg"])
             elif arrived < self._server_before[self.i]:
                 return

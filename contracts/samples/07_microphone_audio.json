@@ -1,0 +1,288 @@
+{
+  "name": "07_microphone_audio",
+  "title": "Microphone audio upload",
+  "description": "The PC uploads 0.5 s chunks of 16 kHz mono audio while the microphone is on. A retried chunk is ignored, a dropped chunk leaves a gap in the chunk numbers, and the event the server found in the audio carries the chunks' microphone generation and AEC status. After the microphone is turned off and on again, chunk numbers restart at 0 in the new generation. Audio bytes are not stored here: only each binary frame's JSON header is listed.",
+  "session_id": "ses-sample-07",
+  "messages": [
+    {
+      "dir": "pc->server",
+      "msg": {
+        "schema": "encore.v1",
+        "session_id": "ses-sample-07",
+        "kind": "control_update",
+        "seq": 0,
+        "capture_ms": 700000,
+        "idempotency_key": "ctl-microphone-1",
+        "sensor": "microphone",
+        "enabled": true,
+        "generation": 1
+      }
+    },
+    {
+      "dir": "server->pc",
+      "msg": {
+        "schema": "encore.v1",
+        "session_id": "ses-sample-07",
+        "kind": "control_ack",
+        "idempotency_key": "ctl-microphone-1",
+        "sensor": "microphone",
+        "generation": 1,
+        "status": "applied"
+      }
+    },
+    {
+      "dir": "pc->server",
+      "msg": {
+        "schema": "encore.v1",
+        "session_id": "ses-sample-07",
+        "kind": "audio_chunk",
+        "seq": 1,
+        "capture_ms": 700000,
+        "generation": 1,
+        "chunk": 0,
+        "sample_rate": 16000,
+        "channels": 1,
+        "encoding": "pcm_s16le",
+        "samples": 8000,
+        "aec": "off"
+      }
+    },
+    {
+      "dir": "pc->server",
+      "msg": {
+        "schema": "encore.v1",
+        "session_id": "ses-sample-07",
+        "kind": "audio_chunk",
+        "seq": 2,
+        "capture_ms": 700500,
+        "generation": 1,
+        "chunk": 1,
+        "sample_rate": 16000,
+        "channels": 1,
+        "encoding": "pcm_s16le",
+        "samples": 8000,
+        "aec": "off"
+      }
+    },
+    {
+      "dir": "pc->server",
+      "msg": {
+        "schema": "encore.v1",
+        "session_id": "ses-sample-07",
+        "kind": "audio_chunk",
+        "seq": 2,
+        "capture_ms": 700500,
+        "generation": 1,
+        "chunk": 1,
+        "sample_rate": 16000,
+        "channels": 1,
+        "encoding": "pcm_s16le",
+        "samples": 8000,
+        "aec": "off"
+      }
+    },
+    {
+      "dir": "pc->server",
+      "msg": {
+        "schema": "encore.v1",
+        "session_id": "ses-sample-07",
+        "kind": "audio_chunk",
+        "seq": 3,
+        "capture_ms": 701500,
+        "generation": 1,
+        "chunk": 3,
+        "sample_rate": 16000,
+        "channels": 1,
+        "encoding": "pcm_s16le",
+        "samples": 8000,
+        "aec": "off"
+      }
+    },
+    {
+      "dir": "server->pc",
+      "msg": {
+        "schema": "encore.v1",
+        "session_id": "ses-sample-07",
+        "kind": "event_update",
+        "cursor": 1,
+        "event": {
+          "event_id": "evt-0010",
+          "revision": 1,
+          "phase": "OPEN",
+          "reaction": {
+            "type": "laughter",
+            "confidence": 0.88
+          },
+          "intensity": {
+            "combined": 0.57,
+            "audio": 0.57,
+            "visual": null
+          },
+          "capture": {
+            "triggers_ms": [
+              701700
+            ],
+            "start_ms": 701600,
+            "end_ms": null
+          },
+          "generations": {
+            "microphone": 1,
+            "camera": null
+          },
+          "playback": {
+            "status": "pending"
+          },
+          "source": {
+            "model": "google/yamnet/1",
+            "config": "sample-1",
+            "aec": "off"
+          }
+        }
+      }
+    },
+    {
+      "dir": "pc->server",
+      "msg": {
+        "schema": "encore.v1",
+        "session_id": "ses-sample-07",
+        "kind": "control_update",
+        "seq": 4,
+        "capture_ms": 702000,
+        "idempotency_key": "ctl-microphone-2",
+        "sensor": "microphone",
+        "enabled": false,
+        "generation": 2
+      }
+    },
+    {
+      "dir": "server->pc",
+      "msg": {
+        "schema": "encore.v1",
+        "session_id": "ses-sample-07",
+        "kind": "control_ack",
+        "idempotency_key": "ctl-microphone-2",
+        "sensor": "microphone",
+        "generation": 2,
+        "status": "applied"
+      }
+    },
+    {
+      "dir": "server->pc",
+      "msg": {
+        "schema": "encore.v1",
+        "session_id": "ses-sample-07",
+        "kind": "event_update",
+        "cursor": 2,
+        "event": {
+          "event_id": "evt-0010",
+          "revision": 2,
+          "phase": "FINAL",
+          "reaction": {
+            "type": "laughter",
+            "confidence": 0.88
+          },
+          "intensity": {
+            "combined": 0.57,
+            "audio": 0.57,
+            "visual": null
+          },
+          "capture": {
+            "triggers_ms": [
+              701700
+            ],
+            "start_ms": 701600,
+            "end_ms": 701900
+          },
+          "generations": {
+            "microphone": 1,
+            "camera": null
+          },
+          "playback": {
+            "status": "pending"
+          },
+          "source": {
+            "model": "google/yamnet/1",
+            "config": "sample-1",
+            "aec": "off"
+          }
+        }
+      }
+    },
+    {
+      "dir": "pc->server",
+      "msg": {
+        "schema": "encore.v1",
+        "session_id": "ses-sample-07",
+        "kind": "control_update",
+        "seq": 5,
+        "capture_ms": 705000,
+        "idempotency_key": "ctl-microphone-3",
+        "sensor": "microphone",
+        "enabled": true,
+        "generation": 3
+      }
+    },
+    {
+      "dir": "server->pc",
+      "msg": {
+        "schema": "encore.v1",
+        "session_id": "ses-sample-07",
+        "kind": "control_ack",
+        "idempotency_key": "ctl-microphone-3",
+        "sensor": "microphone",
+        "generation": 3,
+        "status": "applied"
+      }
+    },
+    {
+      "dir": "pc->server",
+      "msg": {
+        "schema": "encore.v1",
+        "session_id": "ses-sample-07",
+        "kind": "audio_chunk",
+        "seq": 6,
+        "capture_ms": 705000,
+        "generation": 3,
+        "chunk": 0,
+        "sample_rate": 16000,
+        "channels": 1,
+        "encoding": "pcm_s16le",
+        "samples": 8000,
+        "aec": "off"
+      }
+    }
+  ],
+  "expected": {
+    "events": {
+      "evt-0010": {
+        "phase": "FINAL",
+        "revision": 2,
+        "type": "laughter"
+      }
+    },
+    "clips": [
+      {
+        "event_id": "evt-0010",
+        "index": 0,
+        "window_ms": [
+          686700,
+          711700
+        ],
+        "linked_to": null,
+        "expected_status": "unavailable",
+        "reason": "camera_off",
+        "missing_ms": [
+          [
+            686700,
+            711700
+          ]
+        ]
+      }
+    ],
+    "ignored": {
+      "duplicate_audio": 1
+    },
+    "rejected": {},
+    "unapplied_cursors": []
+  }
+}

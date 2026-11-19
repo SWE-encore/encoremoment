@@ -19,10 +19,14 @@ def main(argv=None):
     parser.add_argument("--no-player", action="store_true", help="UI/contract development without GStreamer")
     parser.add_argument("--clip-index", type=Path, help="local saved clip index")
     parser.add_argument("--log")
-    parser.add_argument("--timeout", type=float, default=30)
+    parser.add_argument("--timeout", type=float, default=30,
+                        help="headless run length in seconds; with --mic-wav, counted after the file ends")
     parser.add_argument("--title")
     parser.add_argument("--autoplay", action="store_true")
     parser.add_argument("--audio-sink", default="autoaudiosink")
+    parser.add_argument("--mic-wav", type=Path, metavar="FILE.wav",
+                        help="stand-in microphone until capture exists: stream this mono 16 kHz "
+                             "16-bit WAV to the server while the session's microphone is on")
     args = parser.parse_args(argv)
     if args.video and (args.no_player or args.headless):
         parser.error("video requires the graphical GStreamer player")
@@ -48,10 +52,18 @@ def main(argv=None):
                           log=DeliveryLog(args.log),
                           microphone_on_start=scenario is None)
         driver = ScenarioDriver(session, scenario) if scenario else None
+        mic = None
+        if args.mic_wav:
+            import wave
+            from .sensing.wav_mic import WavMicrophone
+            try:
+                mic = WavMicrophone(session, args.mic_wav)
+            except (OSError, EOFError, ValueError, wave.Error) as exc:
+                parser.error(f"--mic-wav: {exc}")
         if args.headless:
             from .session.__main__ import run_headless
-            return run_headless(session, driver, args.timeout)
-        from PySide6.QtCore import Qt
+            return run_headless(session, driver, args.timeout, mic)
+        from PySide6.QtCore import Qt, QTimer
         from PySide6.QtWidgets import QApplication, QDockWidget, QMainWindow
         from .ui.workspace import Workspace
         app = QApplication.instance() or QApplication(sys.argv[:1])
@@ -86,6 +98,12 @@ def main(argv=None):
                 win.open_file(args.video, args.title)
                 if args.autoplay:
                     win.player.play()
+        if mic is not None:
+            workspace.sensing.setText("Camera: Off — capture unavailable\n"
+                                      f"Microphone: stand-in file {args.mic_wav.name} — no real capture")
+            mic_timer = QTimer(win)
+            mic_timer.timeout.connect(mic.pump)
+            mic_timer.start(50)
         app.aboutToQuit.connect(workspace.shutdown)
         win.show()
         return app.exec()

@@ -56,7 +56,8 @@ Options: `--title` (reported title, default file name), `--session-id`, `--autop
 - **Connection status.** Not started → Connecting → Connected → Disconnected (with the reason) or Session ended. A peer that answers nothing for 15 s counts as dropped. While disconnected, results are greyed out as possibly stale and outgoing messages are kept in `unsent`; resending them and replaying results is EM-20.
 - **Sensor controls.** `Session.set_sensor(sensor, enabled)` sends a `control_update` with the next generation (or the device's own, e.g. `CameraController.generation`). A live session turns the microphone on at Start (R11), since new events are only accepted while it is on; controls made before the connection opens are sent first. Everything the PC sends shares one `seq` counter.
 - **Delivery log.** `--log FILE` writes every step (start, open, in, out, unsent, closed, end) as JSON Lines.
-- **WebSocket.** `session/ws.py` is a small standard-library RFC 6455 implementation (text frames, ping/pong, close, `wss://`), so nothing new needs installing.
+- **Microphone audio.** `Session.send_audio(pcm, capture_ms)` sends 16 kHz mono PCM16 in binary frames (contracts/README.md, "Audio frames"), only while the microphone is on and numbered per generation. Audio captured while disconnected is dropped, not sent late. Until real capture exists, `--mic-wav FILE.wav` streams a file in real time as a stand-in microphone (`sensing/wav_mic.py`).
+- **WebSocket.** `session/ws.py` is a small standard-library RFC 6455 implementation (text and binary frames, ping/pong, close, `wss://`), so nothing new needs installing.
 
 ```sh
 cd client
@@ -69,7 +70,17 @@ cd client
 ../.venv/bin/python -m encore_client.session --scenario ../contracts/samples/04_duplicate_delivery.json --headless
 ```
 
-Fake server options: `--interval` (seconds before each server message, default 0.5), `--drop-after N` (cut the connection after N messages), `--port`.
+Fake server options: `--interval` (seconds before each server message, default 0.5), `--drop-after N` (cut the connection after N messages), `--save-audio FILE.wav` (write the audio it receives), `--port`.
+
+To check audio upload, stream a WAV and compare what the fake server saved (convert other files first with `ffmpeg -i IN -ac 1 -ar 16000 -sample_fmt s16 OUT.wav`):
+
+```sh
+cd client
+# terminal 1
+../.venv/bin/python -m encore_client.session.fake_server ../contracts/samples/07_microphone_audio.json --save-audio received.wav
+# terminal 2: a live session (microphone on at Start) streaming the file
+../.venv/bin/python -m encore_client --headless --session-id ses-sample-07 --mic-wav laugh.wav --timeout 5
+```
 
 ## Test
 

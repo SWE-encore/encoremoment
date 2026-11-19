@@ -1,11 +1,12 @@
 """A small RFC 6455 WebSocket, standard library only.
 
 The contract (contracts/README.md) sends one JSON object per WebSocket text
-frame. This module covers exactly that: text messages, ping/pong and close,
-for a client (masked frames) and for the development fake server. It keeps
-the client free of extra dependencies next to GStreamer and PySide6.
+frame, and microphone audio in binary frames. This module covers exactly
+that: text and binary messages, ping/pong and close, for a client (masked
+frames) and for the development fake server. It keeps the client free of
+extra dependencies next to GStreamer and PySide6.
 
-Not covered: binary messages, extensions (permessage-deflate), subprotocols.
+Not covered: extensions (permessage-deflate), subprotocols.
 ``wss://`` works through the ``ssl`` module.
 """
 
@@ -92,12 +93,13 @@ class WebSocket:
         self.last_rx = time.monotonic()
         self._buf = bytearray(leftover)
         self._frag: list[bytes] | None = None
+        self._frag_op = OP_TEXT
         self._send_lock = threading.Lock()
 
     # ---- receiving ---------------------------------------------------------
 
-    def recv(self) -> str:
-        """Return the next text message.
+    def recv(self) -> str | bytes:
+        """Return the next message: ``str`` for text, ``bytes`` for binary.
 
         Raises ``socket.timeout`` if the socket timeout passes with no complete
         message (nothing is lost; call again), and ``WsClosed`` once closed.
@@ -134,10 +136,10 @@ class WebSocket:
                     pass
                 self._mark_closed(code)
                 raise WsClosed(code, reason)
-            elif op == OP_TEXT:
+            elif op in (OP_TEXT, OP_BINARY):
                 if fin:
-                    return payload.decode("utf-8")
-                self._frag = [payload]
+                    return _message(op, payload)
+                self._frag, self._frag_op = [payload], op
             elif op == OP_CONT and self._frag is not None:
                 self._frag.append(payload)
                 if sum(map(len, self._frag)) > MAX_MESSAGE:
@@ -145,11 +147,11 @@ class WebSocket:
                     raise WsClosed(1009, "message too big")
                 if fin:
                     data, self._frag = b"".join(self._frag), None
-                    return data.decode("utf-8")
+                    return _message(self._frag_op, data)
             else:
-                # Binary or a stray continuation: not part of the contract.
-                self.close(1003, "text messages only")
-                raise WsClosed(1003, "text messages only")
+                # A stray continuation or an unknown opcode.
+                self.close(1002, "protocol error")
+                raise WsClosed(1002, "protocol error")
 
     def _parse_frame(self) -> tuple[bool, int, bytes] | None:
         """Take one complete frame off the buffer, or None if it is incomplete."""
@@ -182,8 +184,12 @@ class WebSocket:
 
     # ---- sending -----------------------------------------------------------
 
-    def send(self, text: str) -> None:
-        self._send_frame(OP_TEXT, text.encode("utf-8"))
+    def send(self, data: str | bytes) -> None:
+        """Send ``str`` as a text message and ``bytes`` as a binary message."""
+        if isinstance(data, str):
+            self._send_frame(OP_TEXT, data.encode("utf-8"))
+        else:
+            self._send_frame(OP_BINARY, bytes(data))
 
     def ping(self) -> None:
         self._send_frame(OP_PING, b"")
@@ -238,6 +244,10 @@ class WebSocket:
         except OSError:
             pass
         self.sock.close()
+
+
+def _message(op: int, payload: bytes) -> str | bytes:
+    return payload.decode("utf-8") if op == OP_TEXT else payload
 
 
 def connect(url: str, timeout: float = 5.0, ssl_context: ssl.SSLContext | None = None) -> WebSocket:

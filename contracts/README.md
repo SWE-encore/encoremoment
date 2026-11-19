@@ -2,14 +2,14 @@
 
 Jira: [EM-1](https://hanyang-team-ldzgset2.atlassian.net/browse/EM-1) · Spec: [Submission B §IV](../documents/submission-b/sections/specifications.tex) · Status: **draft, needs review from PC, AI and server owners**
 
-> **Summary** — This contract defines reaction event and sensor control messages exchanged between the PC and server. The schema is in `schema/`, six executable fixtures are in `samples/`, and the reference implementation of the PC receiver rules is in `reference/`. EM-23 (session/event delivery), EM-2 (clip storage), and EM-24 (UI) can use these fixtures for development and testing. Please review the "Decisions that need review" section below.
+> **Summary** — This contract defines reaction event and sensor control messages exchanged between the PC and server. The schema is in `schema/`, seven executable fixtures are in `samples/`, and the reference implementation of the PC receiver rules is in `reference/`. EM-23 (session/event delivery), EM-2 (clip storage), and EM-24 (UI) can use these fixtures for development and testing. Please review the "Decisions that need review" section below.
 
 ## What is in this folder
 
 | Path | What it is | Who uses it |
 |---|---|---|
 | `schema/messages.schema.json` | JSON Schema (draft 2020-12) for every message | Everyone: validate before sending and after receiving |
-| `samples/*.json` | Six scenarios: a message sequence plus the expected result | Server: emit these. PC/UI: feed these in instead of a live server |
+| `samples/*.json` | Seven scenarios: a message sequence plus the expected result | Server: emit these. PC/UI: feed these in instead of a live server |
 | `reference/encore_contract.py` | Stdlib-only PC receiver: dedup, ordering, generations, R10 clip windows | PC client (EM-23), clip pipeline (EM-2) |
 | `tests/test_contract.py` | Checks samples against the schema and the reference receiver | CI |
 
@@ -22,7 +22,7 @@ python -m unittest discover -s contracts/tests -v
 
 ## Messages
 
-Every message is one JSON object in one WSS text frame, with `"schema": "encore.v1"`, a `kind` and a `session_id`. Unknown fields are rejected, so adding a field means changing the schema here first.
+Every message is one JSON object in one WSS text frame, with `"schema": "encore.v1"`, a `kind` and a `session_id`. The one exception is `audio_chunk`: its JSON object is the header of a binary frame that also carries the audio (see [Audio frames](#audio-frames)). Unknown fields are rejected, so adding a field means changing the schema here first.
 
 | `kind` | Direction | Purpose | Requirement |
 |---|---|---|---|
@@ -30,8 +30,30 @@ Every message is one JSON object in one WSS text frame, with `"schema": "encore.
 | `control_update` | PC → server | Camera, microphone or AEC turned on or off, with its new generation | R5, R8, R12 |
 | `control_ack` | server → PC | Server applied, de-duplicated or rejected a control update | R5, R8 |
 | `event_update` | server → PC | One committed change to one reaction event | R2, R3, R9, R10, R11 |
+| `audio_chunk` | PC → server | Microphone audio, in a binary frame | R1, R2, R8, R9 |
 
-Media packets (audio and video frames) are not part of this contract yet. They reuse the same `session_id`, generation and `capture_ms` fields when they are added.
+Video is not part of this contract yet. It will reuse the same `session_id`, generation and `capture_ms` fields when it is added.
+
+### Audio frames
+
+Microphone audio goes to the server in binary WebSocket frames, so samples are not base64-encoded inside JSON. One frame is one chunk:
+
+| Bytes | Content |
+|---|---|
+| 4 | Header length `N`, unsigned big-endian |
+| `N` | UTF-8 JSON `audio_chunk` header, checked by the schema like any other message |
+| 2 × `samples` | PCM: signed 16-bit little-endian, mono, 16 kHz (what YAMNet takes) |
+
+| Header field | Meaning |
+|---|---|
+| `capture_ms` | Capture time of the first sample, on the PC monotonic clock. Sample `i` was captured at `capture_ms + i / 16`. |
+| `generation` | Microphone generation the audio was captured in. Events found in it carry the same `generations.microphone`. |
+| `chunk` | 0, 1, 2, … within one microphone generation. A skipped number is audio the PC dropped; a repeated one is a retry. |
+| `samples` | Number of samples in the payload, at most 16 000 (1 s). The PC client sends 0.5 s chunks. |
+| `aec` | Echo cancellation status of these samples. The server copies it into `event.source.aec`. |
+| `seq` | The same PC message counter that anchors and controls use. |
+
+`encode_audio_frame` and `decode_audio_frame` in `reference/encore_contract.py` build and check frames, so the client and the server use the same code. A frame whose payload length is not `2 × samples` is refused.
 
 ### `event_update` fields
 
@@ -63,7 +85,8 @@ These are implemented in `reference/encore_contract.py` and exercised by the sam
 5. **Generations.** Each sensor generation increments on every enable and every disable. A control with a generation that is not newer is rejected. A retried control with the same `idempotency_key` is ignored.
 6. **Microphone off (R8).** A **new** event whose microphone generation is not the current enabled one is refused, so late results are never shown as new detections. An event that was already open may still be updated and closed.
 7. **Camera off (R5, R10).** An event with `camera: null` is kept, but it has no clip. Footage from before the camera was enabled is never assumed: the missing part of the window is reported. If the camera stops before a clip's window ends, that clip is cancelled. Disabling the camera clears unsaved video.
-8. **Clip windows (R10).** From `triggers_ms`: the first trigger gives `[t0 − 15 s, t0 + 10 s]`. A re-fire at or before the current end extends the end by 5 s, up to 60 s in total. A re-fire after the end starts a new clip. A re-fire while the clip is already 60 s long starts a new clip linked to the previous one.
+8. **Audio (R8, R9).** Audio is sent only while the microphone is on, in its current generation; anything else is refused as stale. A repeated `chunk` in the same generation is ignored. Audio captured while the connection is down is dropped, not sent late, so the server never analyses stale audio as live; the skipped `chunk` numbers show the gap.
+9. **Clip windows (R10).** From `triggers_ms`: the first trigger gives `[t0 − 15 s, t0 + 10 s]`. A re-fire at or before the current end extends the end by 5 s, up to 60 s in total. A re-fire after the end starts a new clip. A re-fire while the clip is already 60 s long starts a new clip linked to the previous one.
 
 `expected_status` in the samples is the status the clip should reach once EM-2 cuts and verifies the file: `pending` (event not `FINAL`), `ready`, `partial` or `unavailable`. The UI must not show a play link until the real file is finalized and checked.
 
@@ -77,8 +100,9 @@ These are implemented in `reference/encore_contract.py` and exercised by the sam
 | `04_duplicate_delivery.json` | Same cursor twice, out-of-order cursors, replayed revisions after reconnect, retried control, wrong session | duplicate delivery |
 | `05_camera_off.json` | Event with camera off; event 3 s after enabling (partial clip); camera stopped mid-clip | camera off |
 | `06_microphone_off.json` | Microphone disabled while an event is open; a late new detection is refused | extra (R8) |
+| `07_microphone_audio.json` | Audio upload: a retried chunk, a dropped chunk, an event found in the audio, chunk numbers restarting after microphone off and on | extra (R1, R2, R8) |
 
-Each sample has `messages` (`{"dir": "pc->server" | "server->pc", "msg": {...}}` in the order the PC sees them) and `expected` (the receiver's summary after replay). To use one as fake server output, send the `server->pc` messages in order.
+Audio bytes are not stored in the samples; an `audio_chunk` step lists only its frame's header, and the fake server and tests send silence of that length. Each sample has `messages` (`{"dir": "pc->server" | "server->pc", "msg": {...}}` in the order the PC sees them) and `expected` (the receiver's summary after replay). To use one as fake server output, send the `server->pc` messages in order.
 
 ## Decisions that need review
 
@@ -88,7 +112,8 @@ These choices are not spelled out in the specification. They are in the contract
 2. **Camera stop cancels the whole clip (R5, Chul and Soyeon).** The spec says disabling the camera cancels clip jobs and clears unsaved video, so a clip whose window had not ended is `unavailable` and not trimmed to `partial`.
 3. **Open events may close after microphone off (R8, Yujeong).** Only new events from the old microphone generation are refused.
 4. **Normalized 0–1 scores (R3, Yujeong).** Confidence and all intensities are normalized to 0–1 by the server, so the UI can rank and display them without knowing the model.
-5. **Model naming.** `source.model` is a free string. The team chose YAMNet over PANNs on 2026-11-05 in Slack, but Submission B §III–IV still names PANNs. Nothing in this contract depends on which model is used.
+5. **Audio format (R1, R2, server owner).** 16 kHz mono 16-bit PCM in 0.5 s chunks, in binary frames. This is YAMNet's input; Submission B R1 still says 32 kHz, which was the PANNs input. Echo cancellation runs at 48 kHz on the PC before resampling, so the server never resamples.
+6. **Model naming.** `source.model` is a free string. The team chose YAMNet over PANNs on 2026-11-05 in Slack, but Submission B §III–IV still names PANNs. Nothing in this contract depends on which model is used.
 
 ## Changing the contract
 

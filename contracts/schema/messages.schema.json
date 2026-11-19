@@ -2,18 +2,19 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/SWE-encore/encoremoment/contracts/schema/messages.schema.json",
   "title": "Encore Moment event and control messages (encore.v1)",
-  "description": "EM-1 contract. One JSON object per WSS text frame. See contracts/README.md for semantics.",
+  "description": "EM-1 contract. One JSON object per WSS text frame, except audio_chunk, which is the JSON header of a binary frame. See contracts/README.md for semantics.",
   "type": "object",
   "required": ["schema", "kind"],
   "properties": {
     "schema": { "const": "encore.v1" },
-    "kind": { "enum": ["playback_anchor", "control_update", "control_ack", "event_update"] }
+    "kind": { "enum": ["playback_anchor", "control_update", "control_ack", "event_update", "audio_chunk"] }
   },
   "oneOf": [
     { "$ref": "#/$defs/playback_anchor" },
     { "$ref": "#/$defs/control_update" },
     { "$ref": "#/$defs/control_ack" },
-    { "$ref": "#/$defs/event_update" }
+    { "$ref": "#/$defs/event_update" },
+    { "$ref": "#/$defs/audio_chunk" }
   ],
   "$defs": {
     "session_id": {
@@ -41,6 +42,7 @@
       "minimum": 0
     },
     "sensor": { "enum": ["camera", "microphone", "aec"] },
+    "aec": { "enum": ["active", "warming_up", "reference_unavailable", "uncancelled", "off"] },
 
     "playback_anchor": {
       "description": "PC -> server. Player context used to map capture time to content timecode (R3).",
@@ -105,6 +107,45 @@
         "generation": { "$ref": "#/$defs/generation" },
         "status": { "enum": ["applied", "duplicate", "rejected"] },
         "reason": { "type": "string", "maxLength": 200 }
+      }
+    },
+
+    "audio_chunk": {
+      "description": "PC -> server. Header of one binary frame of microphone audio (R1, R2, R8). The PCM samples follow the header in the same frame; see contracts/README.md.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "session_id", "seq", "capture_ms", "generation", "chunk", "sample_rate", "channels", "encoding", "samples", "aec"],
+      "properties": {
+        "schema": { "const": "encore.v1" },
+        "kind": { "const": "audio_chunk" },
+        "session_id": { "$ref": "#/$defs/session_id" },
+        "seq": { "type": "integer", "minimum": 0 },
+        "capture_ms": {
+          "description": "Capture time of the first sample, on the PC monotonic clock.",
+          "$ref": "#/$defs/capture_ms"
+        },
+        "generation": {
+          "description": "Microphone generation the audio was captured in.",
+          "$ref": "#/$defs/generation"
+        },
+        "chunk": {
+          "description": "Index within this microphone generation. Starts at 0 and grows by 1 per captured chunk; a skipped index is audio the PC dropped.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "sample_rate": { "const": 16000 },
+        "channels": { "const": 1 },
+        "encoding": { "const": "pcm_s16le" },
+        "samples": {
+          "description": "Samples in the payload: at most 1 second.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16000
+        },
+        "aec": {
+          "description": "Echo cancellation status of these samples. The server copies it into event.source.aec.",
+          "$ref": "#/$defs/aec"
+        }
       }
     },
 
@@ -220,7 +261,7 @@
           "properties": {
             "model": { "type": "string", "minLength": 1, "maxLength": 100 },
             "config": { "type": "string", "minLength": 1, "maxLength": 100 },
-            "aec": { "enum": ["active", "warming_up", "reference_unavailable", "uncancelled", "off"] }
+            "aec": { "$ref": "#/$defs/aec" }
           }
         }
       },
