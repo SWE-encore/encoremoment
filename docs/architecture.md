@@ -39,7 +39,7 @@ The current UI does not start sensing devices. A live session sends a microphone
 | SQLite | Replace the load_index boundary in clips/model.py with a repository interface, retaining UI sorting/display |
 | Real server | `server/` serves the stream path and receives the audio frames. Start/End over HTTP and authentication still need agreement; keep the Transport boundary in session/ |
 | Reconnection | Implement EM-20 using the existing Session unsent/cursor state. Do not display a dropped connection as automatically recovered |
-| Server/AI/deployment | `server/` runs YAMNet in its own process with sessions in memory. The design's separate API/worker services, Redis/PostgreSQL, and deploy/ come in later PRs; the model adapter and `ServerSession` are where they attach |
+| Server/AI/deployment | `server/` runs YAMNet in its own process with sessions in memory. `deploy/models` installs YAMNet and Face Landmarker on the EC2 host for command-line tests only. The design's separate API/worker services, Redis/PostgreSQL, and deployment of the session server come in later PRs; the model adapter and `ServerSession` are where they attach |
 
 ## Existing entry points
 
