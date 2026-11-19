@@ -23,13 +23,19 @@ _JUMP_MS = 50  # a chunk this far off the expected time is a discontinuity
 
 
 def rms_db(pcm: bytes) -> float:
-    """Loudness of PCM16 audio in dB relative to full scale (silence: -120)."""
+    """Loudness of PCM16 audio in dB relative to full scale (silence: -120).
+
+    The DC offset is removed first: some microphones sit far from zero (a
+    laptop microphone measured at +6 700, -14 dBFS), and an offset is not sound.
+    """
     samples = array("h")
     samples.frombytes(pcm)  # PCM is little-endian; so are the platforms we run on
     if not samples:
         return -120.0
-    mean_square = sum(v * v for v in samples) / len(samples)
-    return 20 * math.log10(max(math.sqrt(mean_square) / 32768, 1e-6))
+    n = len(samples)
+    mean = sum(samples) / n
+    variance = max(sum(v * v for v in samples) / n - mean * mean, 0.0)
+    return 20 * math.log10(max(math.sqrt(variance) / 32768, 1e-6))
 
 
 class RoomBaseline:

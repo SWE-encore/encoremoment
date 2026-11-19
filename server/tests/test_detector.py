@@ -1,5 +1,6 @@
 """Reaction detector: OPEN / UPDATE / FINAL from per-frame scores (R2, R3, R10)."""
 
+import math
 import struct
 
 from encore_server.audio import HOP_MS, WINDOW_MS, AudioWindows, RoomBaseline, rms_db
@@ -89,6 +90,14 @@ def test_rms_db():
     full = struct.pack("<4h", 32767, -32767, 32767, -32767)
     assert round(rms_db(full)) == 0
     assert rms_db(bytes(8)) == -120.0
+
+
+def test_rms_db_ignores_a_dc_offset():
+    tone = [round(8_000 * math.sin(2 * math.pi * 440 * i / 16_000)) for i in range(16_000)]
+    plain = rms_db(struct.pack("<16000h", *tone))
+    shifted = rms_db(struct.pack("<16000h", *(v + 6_700 for v in tone)))
+    assert abs(plain - shifted) < 0.01
+    assert rms_db(struct.pack("<100h", *[6_700] * 100)) == -120.0  # an offset alone is silence
 
 
 def test_audio_windows_overlap_and_restart_after_a_gap():
