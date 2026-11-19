@@ -12,6 +12,11 @@ view of that session. It
 It does no Qt work and never blocks: the UI (or the headless runner) calls
 ``poll()`` on a timer. Reconnection and replay after a drop are R11 work
 (EM-20) and are not done here; a dropped session stays ``disconnected``.
+
+Messages the PC makes itself (``set_sensor``, ``send_anchor``) share one
+``seq`` counter, as in contracts/samples. Sensor controls made before the
+connection opens are sent first when it opens, then the newest anchor, so
+the server learns sensor state before anything else (R9, R11).
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ from . import ws
 from .contract import PC_TO_SERVER, SessionView
 
 STREAM_PATH = "/v1/sessions/{session_id}/stream"
+SENSORS = ("camera", "microphone", "aec")
 _SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{4,64}$")
 
 
@@ -193,7 +199,12 @@ class Session:
         transport_factory: Callable[[str], Transport] = WsTransport,
         log: DeliveryLog | None = None,
         clock: Callable[[], int] = monotonic_ms,
+        microphone_on_start: bool = False,
     ) -> None:
+        """``microphone_on_start``: Start turns the microphone on (R11
+        ``enable_requested_audio``). Leave it off when a ScenarioDriver sends
+        the sample's own controls, or the two would collide.
+        """
         self.session_id = session_id or new_session_id()
         if not _SESSION_ID.match(self.session_id):
             raise ValueError(f"session_id must match {_SESSION_ID.pattern}: {self.session_id!r}")
@@ -208,7 +219,9 @@ class Session:
         self.unsent: list[dict[str, Any]] = []
         self.bad_messages = 0
         self.last_anchor: dict[str, Any] | None = None
+        self.microphone_on_start = microphone_on_start
         self.log = log or DeliveryLog(None, clock)
+        self._seq = 0
         self._clock = clock
         self._factory = transport_factory
         self._transport: Transport | None = None
@@ -222,6 +235,8 @@ class Session:
         self._set_state(Conn.CONNECTING)
         self._transport = self._factory(self.url)
         self._transport.start()
+        if self.microphone_on_start:
+            self.set_sensor("microphone", True)
 
     def end(self) -> None:
         if self.state in (Conn.IDLE, Conn.ENDED):
@@ -237,14 +252,69 @@ class Session:
         """Send one PC message. Returns False if it could not go out now.
 
         The message is applied to the local view either way: a camera turned
-        off is off whether or not the server heard about it. Unsent messages
-        are kept in ``unsent``; resending them is R11 work (EM-20).
+        off is off whether or not the server heard about it. Messages made
+        before the connection opens are sent when it opens; after a drop they
+        stay in ``unsent`` until reconnection exists (R11, EM-20).
         """
         if msg.get("kind") not in PC_TO_SERVER:
             raise ValueError(f"not a PC-to-server message: {msg.get('kind')!r}")
         if msg.get("session_id") != self.session_id:
             raise ValueError("message belongs to another session")
         self.view.receive("pc->server", msg)
+        return self._transmit(msg)
+
+    def set_sensor(
+        self,
+        sensor: str,
+        enabled: bool,
+        *,
+        generation: int | None = None,
+        capture_ms: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Turn a sensor on or off for this session (R5, R8, R12).
+
+        Sends a ``control_update`` with the sensor's next generation, or with
+        ``generation`` when the device code keeps its own counter (for example
+        ``CameraController.generation``); it must be newer than the last one
+        sent. Returns the message, or None if the sensor is already in that
+        state, since the contract rejects a control that changes nothing.
+
+        Call it when the device state really changes: microphone on when audio
+        capture starts, off when it stops (R8); camera on and off from the
+        camera controller (R5). New events are only accepted while the
+        microphone is on (contracts/README.md, receiver rule 6).
+        """
+        if sensor not in SENSORS:
+            raise ValueError(f"unknown sensor {sensor!r}; expected one of {SENSORS}")
+        current = self.view.sensors[sensor]
+        if enabled == current.enabled:
+            return None
+        if generation is None:
+            generation = current.generation + 1
+        if generation <= current.generation:
+            raise ValueError(
+                f"{sensor} generation {generation} is not newer than {current.generation}"
+            )
+        msg = {
+            "schema": "encore.v1",
+            "kind": "control_update",
+            "session_id": self.session_id,
+            "seq": self._next_seq(),
+            "capture_ms": self._clock() if capture_ms is None else capture_ms,
+            "idempotency_key": f"ctl-{sensor}-{generation}",
+            "sensor": sensor,
+            "enabled": enabled,
+            "generation": generation,
+        }
+        self.send(msg)
+        return msg
+
+    def _next_seq(self) -> int:
+        seq = self._seq
+        self._seq += 1
+        return seq
+
+    def _transmit(self, msg: dict[str, Any]) -> bool:
         ok = self.state is Conn.CONNECTED and self._transport is not None
         ok = ok and self._transport.send(json.dumps(msg, ensure_ascii=False))
         if ok:
@@ -262,10 +332,14 @@ class Session:
         soon as the connection opens, which gives the server the title and
         time basis for the session (R3, R11).
         """
-        msg = msg | {"session_id": self.session_id}
-        self.last_anchor = msg
+        self.last_anchor = msg | {"session_id": self.session_id}
         if self.state is Conn.CONNECTED:
-            self.send(msg)
+            self._send_last_anchor()
+
+    def _send_last_anchor(self) -> None:
+        # The player numbers its own anchors; on the wire the session's counter is used.
+        self.last_anchor = self.last_anchor | {"seq": self._next_seq()}
+        self.send(self.last_anchor)
 
     # ---- incoming --------------------------------------------------------------
 
@@ -282,8 +356,11 @@ class Session:
                 self._set_state(Conn.CONNECTED)
                 self.received_at_open = self.received
                 self.log.write("open")
+                queued, self.unsent = self.unsent, []
+                for msg in queued:  # sensor controls made before the connection opened
+                    self._transmit(msg)
                 if self.last_anchor is not None:
-                    self.send(self.last_anchor)
+                    self._send_last_anchor()
             elif what == "message":
                 self._on_message(data)
             elif what == "closed":

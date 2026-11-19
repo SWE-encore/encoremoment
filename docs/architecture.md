@@ -26,13 +26,13 @@ PySide6-Essentials does not include QtMultimedia, so the common dependency is Py
 
 Session and the contract reference receiver own connection and event state. The UI displays that state instead of inventing connected or camera-on states with timers.
 The clip and camera state models remain testable without Qt. The camera model is not yet connected to real hardware.
-The current UI does not start sensing devices. Demo sensor control messages reproduce fixtures; they do not operate devices.
+The current UI does not start sensing devices. A live session sends a microphone-on control at Start (R11) so the server's new events are accepted; no audio is captured yet. Demo sensor control messages reproduce fixtures; they do not operate devices.
 
 ## Integration points for future features
 
 | Feature | Integration point and requirements |
 |---|---|
-| Camera/microphone | Add real adapters in sensing/. Update state through device callbacks and follow the generation rules in contracts |
+| Camera/microphone | Add real adapters in sensing/. Update state through device callbacks and follow the generation rules in contracts; report each on/off with `Session.set_sensor` |
 | AEC | Add microphone DSP to the same top-level pipeline in player/pipeline.py. Distinguish a missing probe from active processing |
 | Clip generation | Add buffering/export layers in clips/. Consume FINAL events and contract clip windows; verify decoding before updating the index |
 | Clip associations | Explicitly associate session_id/event_id with clip_id. Do not arbitrarily match the current sample list to live events |

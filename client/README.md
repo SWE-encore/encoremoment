@@ -54,6 +54,7 @@ Options: `--title` (reported title, default file name), `--session-id`, `--autop
 - **Session.** Start opens the result stream `ws://<server>/v1/sessions/<session_id>/stream` and sends the player's newest playback anchor (title and time basis) as soon as it opens; later anchors follow while connected. End closes the stream.
 - **Delivery.** Every server message goes through `contracts/reference/encore_contract.py` (loaded, not copied): cursor order, one event per `event_id`, newer revisions only, stale generations refused.
 - **Connection status.** Not started → Connecting → Connected → Disconnected (with the reason) or Session ended. A peer that answers nothing for 15 s counts as dropped. While disconnected, results are greyed out as possibly stale and outgoing messages are kept in `unsent`; resending them and replaying results is EM-20.
+- **Sensor controls.** `Session.set_sensor(sensor, enabled)` sends a `control_update` with the next generation (or the device's own, e.g. `CameraController.generation`). A live session turns the microphone on at Start (R11), since new events are only accepted while it is on; controls made before the connection opens are sent first. Everything the PC sends shares one `seq` counter.
 - **Delivery log.** `--log FILE` writes every step (start, open, in, out, unsent, closed, end) as JSON Lines.
 - **WebSocket.** `session/ws.py` is a small standard-library RFC 6455 implementation (text frames, ping/pong, close, `wss://`), so nothing new needs installing.
 

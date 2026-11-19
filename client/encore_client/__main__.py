@@ -40,9 +40,13 @@ def main(argv=None):
         if args.demo:
             from .session.fake_server import FakeServer
             server = FakeServer(scenario, port=0, interval_s=0.05).start()
+        # A live session turns the microphone on at Start (R11), so the server's
+        # events carry a microphone generation the client accepts. A scenario
+        # sends its own controls instead.
         session = Session(server.url if server else args.server,
                           scenario["session_id"] if scenario else args.session_id,
-                          log=DeliveryLog(args.log))
+                          log=DeliveryLog(args.log),
+                          microphone_on_start=scenario is None)
         driver = ScenarioDriver(session, scenario) if scenario else None
         if args.headless:
             from .session.__main__ import run_headless
