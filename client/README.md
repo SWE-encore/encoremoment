@@ -91,7 +91,7 @@ cd client
 ../.venv/bin/python -m encore_client.bench
 ```
 
-- **Audio in.** The default microphone, or any audio or video file (whatever ffmpeg reads is converted to 16 kHz mono). Files play at 1×, 4× or 16×, and an event's content time is its position in the file. Nothing is echo-cancelled, so use headphones if anything else is playing.
+- **Audio in.** The default microphone, or any audio or video file (whatever ffmpeg reads is converted to 16 kHz mono). Files play at 1×, 4× or 16×, and an event's content time is its position in the file. Nothing is echo-cancelled, so use headphones if anything else is playing. If the input delivers exact silence for 1.5 s, the bench says the microphone is probably muted in the system settings.
 - **Server.** Built-in, with the loudness stand-in (any loud sound counts as laughter) or YAMNet; or the URL of a server started separately (`python -m encore_server`, possibly through an SSH tunnel). Scores are visible only with the built-in server; events show either way.
 - **Trigger levels.** The detector's level per reaction, applied at the next Start. Results from non-default levels say so in `source.config`, for example `bench gasp=0.30 laughter=0.30 scream=0.40`.
 - **Plot.** The last 30 s: each reaction's score (solid), room intensity (dotted), trigger levels (dashed), and every received event as a band from its start to its end.

@@ -44,6 +44,7 @@ from .plot import COLORS, ScorePlot
 TICK_MS = 50
 STOP_GRACE_S = 1.0  # after the microphone goes off, time for the server's FINALs to arrive
 SPEEDS = (1, 4, 16)
+MUTED_AFTER_MS = 1_500  # a real room is never exactly zero for this long
 COLUMNS = ("Reaction", "Phase", "Rev", "Confidence", "Intensity", "Start", "End", "Content time", "Event ID")
 STATUS = {
     Conn.IDLE: "#888888", Conn.CONNECTING: "#c28a00", Conn.CONNECTED: "#1a8f3c",
@@ -433,7 +434,11 @@ class BenchWindow(QMainWindow):
             self.status.setText(f'<span style="color:{STATUS[s.state]}; font-weight:600">● {_escape(text)}</span>'
                                 f" · {_escape(where)} · {s.session_id}")
         live = self.source if isinstance(self.source, LiveMicrophone) and running else None
-        self.level.setText(f"Input {_db(live.last_pcm):.0f} dBFS" if live else "")
+        muted = live is not None and live.zero_ms >= MUTED_AFTER_MS
+        self.level.setText("" if live is None else
+                           "No sound at all: is this microphone muted in the system settings?" if muted else
+                           f"Input {_db(live.last_pcm):.0f} dBFS")
+        self.level.setStyleSheet("color: #c62828; font-weight: 600" if muted else "")
 
         if s is None:
             self.counts.setText("")

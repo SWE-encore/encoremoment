@@ -29,6 +29,7 @@ class LiveMicrophone:
         self.sent = 0
         self.recording = bytearray()  # what was captured while the microphone was on, for saving
         self.last_pcm = b""  # the latest device read, for a level meter
+        self.zero_ms = 0  # how long the device has delivered exact zeros: a muted input, not a quiet room
         self._keep = keep_s * AUDIO_RATE * 2
         self._clock = clock
         self._buf = bytearray()
@@ -37,6 +38,7 @@ class LiveMicrophone:
     def feed(self, data: bytes) -> int:
         """Audio just read from the device, ending now. Returns how many chunks went out."""
         self.last_pcm = data
+        self.zero_ms = 0 if any(data) else self.zero_ms + _ms(len(data))
         mic = self.session.view.sensors["microphone"]
         if not mic.enabled:
             self._buf.clear()  # microphone off: nothing is captured (R8)

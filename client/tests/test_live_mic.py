@@ -71,6 +71,16 @@ def test_lost_samples_restart_the_timestamps():
     assert [c[1] for c in session.chunks] == [0, 2_500]
 
 
+def test_exact_zeros_from_the_device_are_counted_as_a_muted_input():
+    session, clock = FakeSession(), Clock(0)
+    mic = LiveMicrophone(session, clock=clock)
+    feed(mic, clock, 20)  # 2 s of exact zeros
+    assert mic.zero_ms == 2_000
+    clock.t += 100
+    mic.feed(b"\x01\x00" + bytes(3_198))  # any real sound, however quiet
+    assert mic.zero_ms == 0
+
+
 def test_qt_input_opens_the_default_device_in_the_contract_format():
     pytest.importorskip("PySide6.QtMultimedia")
     from PySide6.QtMultimedia import QMediaDevices
