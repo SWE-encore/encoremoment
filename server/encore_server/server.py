@@ -6,8 +6,8 @@ every committed result after ``?after=<cursor>`` (default 0), so a PC that
 reconnects catches up (R11). A normal close (code 1000, the PC's End) ends
 the session; a dropped connection leaves it open for a reconnect.
 
-Sessions live in memory for the life of the process. Persistence (Redis,
-PostgreSQL) and HTTP session management are later work.
+The live session and replay cursor are process-local. When history is enabled,
+FINAL metadata is archived in PostgreSQL and available through the history route.
 """
 
 from __future__ import annotations
@@ -20,16 +20,19 @@ from contextlib import aclosing
 from http import HTTPStatus
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
 
 from websockets.asyncio.server import serve, unix_serve
 from websockets.exceptions import ConnectionClosed
 
 from .detector import DetectorConfig, Frame
 from .fusion import TabRules
+from .history import HistoryUnavailable, PostgresHistory, SessionArchive
 from .session import IDLE_S, ServerSession
 from .stream import messages_with_idle
 
 PATH = re.compile(r"^/v1/sessions/([A-Za-z0-9_-]{4,64})/stream$")
+HISTORY_PATH = re.compile(r"^/v1/sessions/([A-Za-z0-9_-]{4,64})/events$")
 POLL_S = 0.5
 MAX_MESSAGE = 1 << 20
 
@@ -40,6 +43,7 @@ class EncoreServer:
         model: Callable[[bytes], dict[str, float]],
         config: DetectorConfig | None = None,
         *,
+        history: PostgresHistory | None = None,
         face_model=None,
         smile_threshold: float = TabRules.smile,
         quiet_ms: int = TabRules.quiet_ms,
@@ -49,6 +53,7 @@ class EncoreServer:
     ) -> None:
         """``on_frame(session_id, frame)``: every analysed frame, for debugging tools.
         It is called on a worker thread."""
+        self.archive = SessionArchive(history) if history is not None else None
         self.face_model = face_model
         self.smile_threshold = smile_threshold
         self.quiet_ms = quiet_ms
@@ -73,8 +78,21 @@ class EncoreServer:
             self.say(f"listening on {address}")
             await asyncio.get_running_loop().create_future()  # until cancelled
 
-    def check_path(self, connection, request):
-        if PATH.match(urlsplit(request.path).path) is None:
+    async def check_path(self, connection, request):
+        path = urlsplit(request.path).path
+        history_route = HISTORY_PATH.fullmatch(path)
+        if self.archive is not None and history_route:
+            sid = history_route.group(1)
+            try:
+                events = await self.archive.store.for_session(sid)
+            except HistoryUnavailable:
+                return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "History temporarily unavailable\n")
+            response = connection.respond(HTTPStatus.OK, json.dumps({"session_id": sid, "events": events}))
+            del response.headers["Content-Type"]
+            response.headers["Content-Type"] = "application/json"
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        if PATH.match(path) is None:
             return connection.respond(HTTPStatus.NOT_FOUND, "Not found: use /v1/sessions/<session_id>/stream\n")
         return None
 
@@ -90,6 +108,7 @@ class EncoreServer:
             watch = (lambda frame, sid=sid: self.on_frame(sid, frame)) if self.on_frame else None
             session = self.sessions[sid] = ServerSession(sid, self.model, self.config, idle_s=self.idle_s,
                                                          on_frame=watch, face_model=self.face_model,
+                                                         event_prefix=f"evt-{uuid4().hex}" if self.archive else "evt",
                                                          smile_threshold=self.smile_threshold, quiet_ms=self.quiet_ms)
             self._locks[sid] = asyncio.Lock()
         windows = 0
@@ -100,7 +119,11 @@ class EncoreServer:
             await old.close(1000, "replaced by a new connection")
         self.say(f"{sid}: connected, {len(session.results_after(after))} result(s) to replay")
         try:
-            for msg in session.results_after(after):
+            async with lock:
+                if self.archive:
+                    await self.archive.flush(session)
+                replay = session.results_after(after)
+            for msg in replay:
                 await ws.send(json.dumps(msg, ensure_ascii=False))
             async with aclosing(messages_with_idle(ws.recv, POLL_S)) as messages:
                 async for data in messages:
@@ -111,6 +134,8 @@ class EncoreServer:
                             out = await asyncio.to_thread(session.on_audio, data)
                         else:
                             out = session.on_text(data)
+                        if self.archive:
+                            await self.archive.flush(session)
                     for msg in out:
                         if msg["kind"] == "demo_scores":
                             windows += 1
@@ -119,6 +144,9 @@ class EncoreServer:
                                          f"smile={msg['smile']} faces={msg['faces_seen']}/{msg['face_frames']}")
                         self._report(sid, msg)
                         await ws.send(json.dumps(msg, ensure_ascii=False))
+        except HistoryUnavailable:
+            self.say(f"{sid}: history unavailable; pending results retained for reconnect")
+            await ws.close(1011, "History temporarily unavailable")
         except ConnectionClosed:
             pass
         finally:
@@ -128,6 +156,11 @@ class EncoreServer:
                     async with lock:
                         for msg in session.end():
                             self._report(sid, msg)
+                        if self.archive:
+                            try:
+                                await self.archive.flush(session)
+                            except HistoryUnavailable:
+                                self.say(f"{sid}: end-of-session history pending until reconnect")
                     self.say(f"{sid}: session ended")
                 else:
                     self.say(f"{sid}: connection dropped ({ws.close_code}); kept for a reconnect")
