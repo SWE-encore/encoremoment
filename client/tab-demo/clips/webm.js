@@ -9,7 +9,7 @@ function vint(data, pos, id = false) {
   const first = data[pos];
   let mask = 128, size = 1;
   while (mask && !(first & mask)) { mask >>= 1; size++; }
-  if (!mask || pos + size > data.length || (id && size > 4)) throw Error("손상된 WebM 헤더");
+  if (!mask || pos + size > data.length || (id && size > 4)) throw Error("Invalid WebM header");
   let value = id ? first : first - mask;
   let unknown = !id && value === mask - 1;
   for (let i = 1; i < size; i++) {
@@ -36,19 +36,19 @@ function* elements(data) {
         while (end < data.length) {
           const child = header(data, end);
           if (LEVEL_ONE.has(child.id)) break;
-          if (!Number.isFinite(child.size)) throw Error("지원하지 않는 WebM 클러스터");
+          if (!Number.isFinite(child.size)) throw Error("Unsupported WebM cluster");
           end = child.body + child.size;
         }
-      } else if (id !== SEGMENT) throw Error("지원하지 않는 WebM 요소");
+      } else if (id !== SEGMENT) throw Error("Unsupported WebM element");
     }
-    if (end > data.length) throw Error("잘린 WebM 구간");
+    if (end > data.length) throw Error("Incomplete WebM segment");
     yield {id, raw:data.subarray(pos, end), data:data.subarray(body, end)};
     pos = end;
   }
 }
 
 function uint(value) {
-  if (!Number.isSafeInteger(value) || value < 0) throw Error("잘못된 WebM 시간 또는 크기");
+  if (!Number.isSafeInteger(value) || value < 0) throw Error("Invalid WebM timestamp or size");
   const bytes = [];
   do { bytes.unshift(value % 256); value = Math.floor(value / 256); } while (value);
   return Uint8Array.from(bytes);
@@ -69,6 +69,67 @@ function signature(tracks) {
     [...elements(entry.data)].filter(el => config.has(el.id)).map(el => [el.id, ...el.data])));
 }
 
+// Chromium can flag an opaque VP8/VP9 track as having alpha. Some desktop
+// decoders then wait for a BlockAdditional plane that never arrives. Clear
+// only the flag payload, so cue positions, timestamps and codecs stay intact.
+function unusedAlphaFlags(bytes) {
+  const segment = [...elements(bytes)].find(el => el.id === SEGMENT);
+  if (!segment) return [];
+  const children = [...elements(segment.data)];
+  const tracks = children.find(el => el.id === TRACKS);
+  if (!tracks) return [];
+  const entries = [...elements(tracks.data)];
+  const hasChecksum = fields => fields.some(el => el.id === 0xbf);
+  if (hasChecksum(children) || hasChecksum(entries)) return [];
+
+  const flags = new Map();
+  for (const entry of entries.filter(el => el.id === 0xae)) {
+    const fields = [...elements(entry.data)];
+    const video = fields.find(el => el.id === 0xe0);
+    if (!video || hasChecksum(fields)) continue;
+    const codec = fields.find(el => el.id === 0x86);
+    if (!codec || !["V_VP8", "V_VP9"].includes(new TextDecoder().decode(codec.data))) continue;
+    const settings = [...elements(video.data)];
+    const flag = settings.find(el => el.id === 0x53c0);
+    const track = fields.find(el => el.id === 0xd7);
+    if (flag && track && number(flag.data) === 1 && !hasChecksum(settings)) {
+      flags.set(number(track.data), flag.data);
+    }
+  }
+  if (!flags.size) return [];
+
+  for (const cluster of children.filter(el => el.id === CLUSTER)) {
+    for (const el of elements(cluster.data)) {
+      if (el.id !== 0xa0) continue; // SimpleBlock cannot carry an auxiliary plane.
+      const group = [...elements(el.data)];
+      if (!group.some(field => field.id === 0x75a1)) continue;
+      const block = group.find(field => field.id === 0xa1);
+      if (!block) return []; // ambiguous group; retain the original headers
+      flags.delete(vint(block.data, 0).value);
+    }
+  }
+  return [...flags.values()];
+}
+
+export async function downloadableWebm(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let flags;
+  try {
+    flags = unusedAlphaFlags(bytes);
+  } catch {
+    // Old or unfamiliar containers remain available as originally recorded.
+    return file;
+  }
+  if (!flags.length) return file;
+  const parts = [];
+  let pos = 0;
+  for (const flag of flags) {
+    parts.push(file.slice(pos, flag.byteOffset), new Uint8Array(flag.byteLength));
+    pos = flag.byteOffset + flag.byteLength;
+  }
+  return new Blob([...parts, file.slice(pos)], {type:"video/webm"});
+}
+
 export async function assemble(parts) {
   let firstHeader, firstInfo, firstTracks, expected, scale;
   const clusters = [];
@@ -77,25 +138,25 @@ export async function assemble(parts) {
     const top = [...elements(data)];
     const head = top.find(el => el.id === 0x1a45dfa3);
     const segment = top.find(el => el.id === SEGMENT);
-    if (!head || !segment) throw Error("재생할 수 없는 WebM 구간");
+    if (!head || !segment) throw Error("Unplayable WebM segment");
     const children = [...elements(segment.data)];
     const info = children.find(el => el.id === INFO);
     const tracks = children.find(el => el.id === TRACKS);
-    if (!info || !tracks) throw Error("트랙 정보가 없는 WebM 구간");
+    if (!info || !tracks) throw Error("WebM segment has no track information");
     const fields = [...elements(info.data)];
     const units = number(fields.find(el => el.id === SCALE)?.data || []) || 1000000;
     const config = signature(tracks.data);
     if (!firstHeader) {
       firstHeader = head.raw; firstTracks = tracks.raw; expected = config; scale = units;
       firstInfo = fields.filter(el => el.id !== 0x4489 && el.id !== 0xbf).map(el => el.raw);
-    } else if (config !== expected || scale !== units) throw Error("녹화 형식이 바뀌어 하나의 클립으로 저장할 수 없습니다.");
+    } else if (config !== expected || scale !== units) throw Error("The recording format changed. The segments cannot be saved as a single clip.");
     const blocks = children.filter(el => el.id === CLUSTER);
-    if (!blocks.length) throw Error("영상 데이터가 없는 WebM 구간");
+    if (!blocks.length) throw Error("WebM segment has no media data");
     let firstTime;
     for (const block of blocks) {
       const fields = [...elements(block.data)];
       const stamp = fields.find(el => el.id === TIMECODE);
-      if (!stamp) throw Error("WebM 타임코드 누락");
+      if (!stamp) throw Error("Missing WebM timecode");
       const local = number(stamp.data);
       firstTime ??= local;
       const time = Math.round((part.start - parts[0].start) * 1000000 / scale) + local - firstTime;

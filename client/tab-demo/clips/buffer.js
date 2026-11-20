@@ -7,9 +7,9 @@ async function verifyPlayback(blob) {
   let timeout;
   try {
     await new Promise((resolve, reject) => {
-      timeout = setTimeout(() => reject(Error("녹화 파일 디코딩 시간 초과")), 10000);
-      video.onloadeddata = () => video.videoWidth > 0 ? resolve() : reject(Error("영상 트랙이 없습니다."));
-      video.onerror = () => reject(Error("녹화 파일을 재생할 수 없습니다."));
+      timeout = setTimeout(() => reject(Error("Timed out while decoding the recording.")), 10000);
+      video.onloadeddata = () => video.videoWidth > 0 ? resolve() : reject(Error("The recording has no video track."));
+      video.onerror = () => reject(Error("Could not play the recording."));
       video.preload = "auto";
       video.src = url;
     });
@@ -45,7 +45,7 @@ class Recording {
         if (!this.error) return this.writer.write(data);
       }).catch(fail);
     };
-    this.recorder.onerror = event => fail(event.error || Error("탭 녹화 실패"));
+    this.recorder.onerror = event => fail(event.error || Error("Could not record the tab."));
   }
 
   async finish(filename, preview = false) {
@@ -61,7 +61,7 @@ class Recording {
       }
       await this.writer.close();
       const file = await this.handle.getFile();
-      if (!file.size) throw Error("녹화된 영상이 비어 있습니다.");
+      if (!file.size) throw Error("The recording is empty.");
       // The rolling file is removed below. The short preview owns its bytes.
       if (preview) return new Blob([await file.arrayBuffer()], {type: this.recorder.mimeType});
       await this.handle.move(filename);
@@ -79,7 +79,7 @@ export class ClipBuffer {
   constructor(stream, dir, {onSignal, onPreview, onPreviewError, onSaved, onError, generation = 1}) {
     const mimeType = ["video/webm;codecs=vp8,opus", "video/webm"].find(
       type => MediaRecorder.isTypeSupported(type));
-    if (!mimeType) throw Error("WebM 녹화를 시작할 수 없습니다.");
+    if (!mimeType) throw Error("This browser cannot record WebM.");
     Object.assign(this, {dir, onSignal, onPreview, onSaved, onError, generation});
     this.onPreviewError = onPreviewError || onError;
     this.make = () => new Recording(stream, dir, mimeType, onError);
