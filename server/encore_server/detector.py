@@ -62,12 +62,14 @@ class _Open:
 
 
 class ReactionDetector:
-    def __init__(self, config: DetectorConfig | None = None, tab_rules: TabRules | None = None) -> None:
+    def __init__(self, config: DetectorConfig | None = None, tab_rules: TabRules | None = None,
+                 *, event_prefix: str = "evt") -> None:
         self.config = config or DetectorConfig()
         self.tab_rules = tab_rules
         self.fusion = RollingFusion(tab_rules) if tab_rules else None
         self.open: dict[str, _Open] = {}
         self._count = 0
+        self._event_prefix = event_prefix
 
     def push(self, frame: Frame) -> list[tuple[dict[str, Any], str]]:
         """Feed one frame. Returns the events that changed, each with its AEC status."""
@@ -115,7 +117,7 @@ class ReactionDetector:
     def _open(self, reaction: str, frame: Frame, t: int, score: float):
         self._count += 1
         ev = {
-            "event_id": f"evt-{self._count:04d}",
+            "event_id": f"{self._event_prefix}-{self._count:04d}",
             "revision": 1,
             "phase": "OPEN",
             "reaction": {"type": reaction, "confidence": score},
