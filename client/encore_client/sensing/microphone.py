@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ..session.session import Conn
+from ..session.session import STARTED, Conn
 
 
 class CaptureDevice(Protocol):
@@ -24,7 +24,7 @@ class CaptureDevice(Protocol):
     def stop(self) -> None: ...
 
 
-ACTIVE = (Conn.CONNECTING, Conn.CONNECTED, Conn.DISCONNECTED)  # started, not ended
+ACTIVE = STARTED  # started, not ended
 
 
 class MicrophoneSwitch:

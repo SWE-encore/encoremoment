@@ -24,7 +24,7 @@ The Encore Moment PC client (Python, PySide6, GStreamer). It currently contains 
 - **Epochs** follow the contract: a new epoch on every seek and every new file; pause, resume and speed change keep the epoch. `AnchorTracker.map_time(capture_ms)` turns any capture time into `(epoch, content timecode)`, or `None` if no anchor existed yet (contract status `pending`).
 - Routes audio through `volume ! webrtcechoprobe` at 48 kHz in the same top-level pipeline, so the microphone branch with `webrtcdsp` can be added there later (Submission B, R1). If the probe plugin is missing the player still plays and the status bar says the echo reference is unavailable.
 
-Session start/end and result delivery are in `encore_client/session/` (EM-23, see below). Not included yet: camera/microphone capture, reconnect and replay (EM-20), playlists or subtitles.
+Session start/end and result delivery are in `encore_client/session/` (EM-23, see below). Not included yet: camera/microphone capture, playlists or subtitles.
 
 ## Setup (Ubuntu 24.04)
 
@@ -53,9 +53,10 @@ Options: `--title` (reported title, default file name), `--session-id`, `--autop
 
 - **Session.** Start opens the result stream `ws://<server>/v1/sessions/<session_id>/stream` and sends the player's newest playback anchor (title and time basis) as soon as it opens; later anchors follow while connected. End closes the stream.
 - **Delivery.** Every server message goes through `contracts/reference/encore_contract.py` (loaded, not copied): cursor order, one event per `event_id`, newer revisions only, stale generations refused.
-- **Connection status.** Not started → Connecting → Connected → Disconnected (with the reason) or Session ended. A peer that answers nothing for 15 s counts as dropped. While disconnected, results are greyed out as possibly stale and outgoing messages are kept in `unsent`; resending them and replaying results is EM-20.
+- **Connection status.** Not started → Connecting → Connected → Disconnected (with the reason) or Session ended. A peer that answers nothing for 15 s counts as dropped. While disconnected or reconnecting, results are greyed out as possibly stale.
+- **Reconnection (EM-20).** A live session reconnects after a drop (after 1, 2, 5, then every 10 s) with `?after=<last applied cursor>`, re-sends every sensor control unchanged before anything else, then the newest anchor. Audio captured while disconnected is dropped. If the server no longer has the session (it restarted), the session stays disconnected and says so. Scenario runs are not reconnected. Details and tests: [docs/em-20-reconnect.md](docs/em-20-reconnect.md).
 - **Sensor controls.** `Session.set_sensor(sensor, enabled)` sends a `control_update` with the next generation (or the device's own, e.g. `CameraController.generation`). A live session turns the microphone on at Start (R11), since new events are only accepted while it is on; controls made before the connection opens are sent first. Everything the PC sends shares one `seq` counter.
-- **Delivery log.** `--log FILE` writes every step (start, open, in, out, unsent, closed, end) as JSON Lines.
+- **Delivery log.** `--log FILE` writes every step (start, open, in, out, unsent, closed, reconnect, lost, end) as JSON Lines.
 - **Microphone audio.** `Session.send_audio(pcm, capture_ms)` sends 16 kHz mono PCM16 in binary frames (contracts/README.md, "Audio frames"), only while the microphone is on and numbered per generation. Audio captured while disconnected is dropped, not sent late. Until real capture exists, `--mic-wav FILE.wav` streams a file in real time as a stand-in microphone (`sensing/wav_mic.py`).
 - **WebSocket.** `session/ws.py` is a small standard-library RFC 6455 implementation (text and binary frames, ping/pong, close, `wss://`), so nothing new needs installing.
 

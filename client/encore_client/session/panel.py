@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..ui.formatting import format_ms
-from .session import Conn, ScenarioDriver, Session, event_rows
+from .session import STARTED, Conn, ScenarioDriver, Session, event_rows
 
 POLL_MS = 100
 COLUMNS = ("Time", "Reaction", "Phase", "Rev", "Intensity", "Confidence", "Event ID")
@@ -25,6 +25,7 @@ STATUS = {
     Conn.CONNECTING: ("#c28a00", "Connecting…"),
     Conn.CONNECTED: ("#1a8f3c", "Connected"),
     Conn.DISCONNECTED: ("#c62828", "Disconnected"),
+    Conn.RECONNECTING: ("#c28a00", "Reconnecting…"),
     Conn.ENDED: ("#888888", "Session ended"),
 }
 
@@ -91,11 +92,8 @@ class SessionPanel(QWidget):
         ready = not self.require_anchor or s.last_anchor is not None
         self.start_btn.setEnabled(s.state is Conn.IDLE and ready)
         self.start_btn.setToolTip("Open a video before starting." if not ready else "")
-        self.end_btn.setEnabled(s.state in (Conn.CONNECTING, Conn.CONNECTED, Conn.DISCONNECTED))
-        color, text = STATUS[s.state]
-        if s.state is Conn.DISCONNECTED:
-            text += f": {s.reason}. Results below may be out of date."
-        self.status.setText(f'<span style="color:{color}; font-weight:600">● {text}</span>')
+        self.end_btn.setEnabled(s.state in STARTED)
+        self.status.setText(f'<span style="color:{STATUS[s.state][0]}; font-weight:600">● {status_text(s)}</span>')
 
         rows = event_rows(s.view)
         if rows != self._shown_rows:
@@ -125,6 +123,22 @@ class SessionPanel(QWidget):
             + (f" · ignored {summary['ignored']}" if summary["ignored"] else "")
             + (f" · rejected {summary['rejected']}" if summary["rejected"] else "")
         )
+
+
+def status_text(s: Session) -> str:
+    """The connection line. A drop is never shown as recovered until the stream is open again (R11)."""
+    text = STATUS[s.state][1]
+    if s.state is Conn.DISCONNECTED:
+        text += f": {s.reason}."
+        if s.retry_in_ms is not None:
+            text += f" Reconnecting in {s.retry_in_ms / 1000:.0f} s (attempt {s.attempt + 1})."
+        text += " Results below may be out of date."
+    elif s.state is Conn.RECONNECTING:
+        text += f" (attempt {s.attempt}). Results below may be out of date."
+    elif s.state is Conn.CONNECTED and s.reconnects:
+        text += (f" — reconnected after {s.reconnects} drop(s); "
+                 "audio captured while disconnected was not analysed")
+    return text
 
 
 def _num(value) -> str:

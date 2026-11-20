@@ -40,7 +40,7 @@ The current UI does not start sensing devices. A live session sends a microphone
 | Clip associations | Explicitly associate session_id/event_id with clip_id. Do not arbitrarily match the current sample list to live events |
 | SQLite | Replace the load_index boundary in clips/model.py with a repository interface, retaining UI sorting/display |
 | Real server | `server/` serves the stream path and receives the audio frames. Start/End over HTTP and authentication still need agreement; keep the Transport boundary in session/ |
-| Reconnection | Implement EM-20 using the existing Session unsent/cursor state. Do not display a dropped connection as automatically recovered |
+| Reconnection | `Session` reconnects with `?after=<cursor>` and re-sends its controls first (EM-20, [client/docs/em-20-reconnect.md](../client/docs/em-20-reconnect.md)). A dropped connection is shown as recovered only once the stream is open again; a server that lost the session is reported, not recovered. A future deletion request should be re-sent like a control |
 | Server/AI/deployment | `server/` runs YAMNet in its own process with sessions in memory. `deploy/models` installs YAMNet and Face Landmarker on the EC2 host for command-line tests only. The design's separate API/worker services, Redis/PostgreSQL, and deployment of the session server come in later PRs; the model adapter and `ServerSession` are where they attach |
 
 ## Existing entry points
