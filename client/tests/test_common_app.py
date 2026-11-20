@@ -39,7 +39,8 @@ def test_workspace_receives_deduplicates_and_shows_actual_disconnect(app, tmp_pa
     workspace = Workspace(session, driver, tmp_path / "index.json", demo=True)
     workspace.show()
     try:
-        assert "Camera: Off" in workspace.sensing.text()
+        assert "Camera: Off" in workspace.camera_panel.indicator.text()
+        assert "Microphone: Off" in workspace.sensing.text()
         workspace.session_panel.start_btn.click()
         wait_for(app, lambda: driver.done and "evt-0004" in workspace.highlights.text())
         assert workspace.session_panel.table.rowCount() == 1

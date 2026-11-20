@@ -141,8 +141,8 @@ def main(argv=None):
                     win.player.play()
         from .sensing.microphone import MicrophoneSwitch
         if mic is not None:
-            workspace.sensing.setText("Camera: Off — capture unavailable\n"
-                                      f"Microphone: stand-in file {args.mic_wav.name} — no real capture")
+            workspace.sensing.setText(
+                f"Microphone: stand-in file {args.mic_wav.name} — no real capture")
             workspace.add_microphone(MicrophoneSwitch(session, None, source=f"file {args.mic_wav.name}"))
             mic_timer = QTimer(win)
             mic_timer.timeout.connect(mic.pump)
@@ -155,7 +155,6 @@ def main(argv=None):
                 parser.exit(2, f"--mic: {exc}\n")
             where = f"built-in {local.model_name} server" if local else url
             workspace.sensing.setText(
-                "Camera: Off — capture unavailable\n"
                 "No echo cancellation (aec: off): use headphones if anything else is playing\n"
                 f"Analysis: {where}" + (" · times are seconds since Start" if mic_clock else ""))
             workspace.add_microphone(MicrophoneSwitch(session, qt_mic, source=qt_mic.device.description()))
