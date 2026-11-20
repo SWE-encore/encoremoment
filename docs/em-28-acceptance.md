@@ -5,6 +5,7 @@ This record shows what `main` does today against requirements R1–R11 (`documen
 - **Commit:** `a82b6b5` (main, "Merge pull request #21 from SWE-encore/feat/tab-demo-ui")
 - **Date run:** 2026-11-20
 - **Open PRs that change results:** #22 (R3 records), #23 (R11 reconnect), #24 (R11 graceful End). None is counted below.
+- **Merged since:** #15 (EM-29, `ed92018`). It adds an opt-in PostgreSQL archive of FINAL events and changes no R1–R11 status (see [Deployment](#not-in-r1r11-but-needed-for-the-run-deployment)). The Python suite on `ed92018` gives 198 passed and 2 skipped. The new skip is the PostgreSQL integration test, which passes against a PostgreSQL 16 database.
 
 ## Two products, kept apart
 
@@ -97,6 +98,7 @@ PC app on `main`: 1 pass, 6 partial, 1 unverified, 3 not built.
   - `test_events_map_to_content_timecode_through_anchors`, `test_a_seek_during_the_event_leaves_the_end_unmapped` and `test_paused_anchor_pins_the_timecode`
 
   Intensity is loudness above the room's quiet level (`audio.py`), an observable quantity. Delayed delivery of anchors is not covered on `main`. PR #22 adds it.
+- **Since `ed92018`:** with `--record-history`, FINAL records also survive a server restart and can be read from `GET /v1/sessions/<session_id>/events`. R3 does not require this.
 - **Observation:** in run 4 the event starts at 1.4 s, but the tone starts at 2.0 s. The recorded start is the first analysis window that contains the sound, so it can be up to one window early. The specification already calls framewise predictions approximate.
 - **Owner:** EM-12. PR #22 is waiting for review.
 
@@ -186,11 +188,23 @@ PC app on `main`: 1 pass, 6 partial, 1 unverified, 3 not built.
 
 ## Not in R1–R11 but needed for the run: deployment
 
-There is **no Docker Compose file** in the repository. The specification (R13) makes Compose the initial AWS runtime, with separate API and worker services, Redis and PostgreSQL. Today the server is one Python process (`python -m encore_server`) that keeps sessions in memory. `deploy/models/` only installs YAMNet and Face Landmarker for command-line inference on the team's server. The related issues:
+There is **no Docker Compose file** in the repository. The specification (R13) makes Compose the initial AWS runtime, with separate API and worker services, Redis and PostgreSQL. Today the server is one Python process (`python -m encore_server`) that keeps live sessions in memory. `deploy/models/` only installs YAMNet and Face Landmarker for command-line inference on the team's server. The related issues:
 
 - EM-3: minimal client–server integration environment (Chul)
 - EM-22: Kubernetes deployability (Chul)
-- EM-29: PostgreSQL (RDS) for confirmed events, in progress
+- EM-29: PostgreSQL (RDS) for confirmed events, merged in #15 as an opt-in mode
+
+**PostgreSQL history (EM-29, `ed92018`).**
+
+- **How it works:** `--record-history` with `DATABASE_URL` stores each FINAL event in `reaction_events` (`server/sql/001_reaction_events.sql`) before delivering it. `GET /v1/sessions/<session_id>/events` returns them. Without the flag the server behaves as before.
+- **CI:** a `postgres-history` job runs the integration test against a `postgres:16` service.
+- **Tested here:**
+  - the restart and same-session-ID test passes against a local PostgreSQL 16;
+  - a server stopped mid-reaction (close 1001) archives nothing, because the reaction never became FINAL.
+- **Open (review on #15):** two database-outage cases.
+  - If the database is down when the PC ends the session, the FINAL that End closes is never archived, even after the database recovers.
+  - If the database is down during a live session, the first FINAL closes the connection with 1011, and the microphone-off acknowledgement in the same batch is not delivered. Every reconnect is then closed at once, so the session analyses no audio until the database is back.
+- **Not tested:** the EC2–RDS connection, which EM-29 plans for after the presentation.
 
 Until one of them lands, every run above uses a server started by hand.
 
@@ -206,6 +220,7 @@ Until one of them lands, every run above uses a server started by hand.
 | Soyeon | EM-18 | AEC status, clip progress | R9 |
 | Chul | EM-19 | PC clip recording; clip-stitching problem | R10 |
 | Chul | EM-3 | Compose (or another repeatable server start) | rerun of this record |
+| Chul | EM-29 | History mode during a database outage; EC2–RDS check | live sessions with `--record-history` |
 | Pavel | EM-12, EM-20 | Merge PRs #22, #23, #24 after review | R3, R11 |
 | Unassigned | EM-11, EM-26 | Labeled recordings and the evaluation report | R2 |
 | Team | — | PANNs vs YAMNet: update the spec or the model | R2 |
@@ -245,6 +260,11 @@ cd client && ../.venv/bin/python -m encore_client --demo --headless; cd ..
 PYTHONPATH=server .venv/bin/python -m encore_server --model loudness --port 8799 &
 cd client && ../.venv/bin/python -m encore_client --headless --no-player \
   --mic-wav tone.wav --server ws://127.0.0.1:8799 --timeout 5; cd ..
+
+# PostgreSQL history (EM-29), against a dedicated test database
+.venv/bin/python -m pip install -r server/requirements-history.txt
+ENCORE_TEST_DATABASE_URL=postgresql://USER:PASSWORD@127.0.0.1:5432/encore_test \
+  .venv/bin/python -m pytest -q server/tests/test_event_history.py
 
 # Browser recording test
 python3 -m http.server 8002 --bind 127.0.0.1 --directory client/tab-demo
