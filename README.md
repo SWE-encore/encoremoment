@@ -8,31 +8,7 @@ Submission B defines the current PC-first design; Submission A preserves the ear
 
 ## System architecture
 
-```mermaid
-flowchart TB
-    subgraph PC["User's PC"]
-        tab["Chrome · shared tab"]
-        buffer["Browser recording buffer"]
-        clips["Local WebM clips"]
-        desktop["Desktop app · PySide6 / GStreamer"]
-        tab -->|Record in 5-second segments| buffer
-        buffer -->|Save event window| clips
-    end
-    subgraph EC2["EC2 · session server"]
-        session["WebSocket session"]
-        audio["YAMNet · sound"]
-        face["MediaPipe · facial expression"]
-        fusion["Reaction detection"]
-        session -->|PCM audio| audio
-        session -->|Sampled frames| face
-        audio --> fusion
-        face --> fusion
-    end
-    tab -->|Audio and frames over SSH tunnel| session
-    desktop <-->|Playback anchors and events| session
-    fusion -->|OPEN / UPDATE / FINAL over WebSocket| buffer
-    fusion -.->|FINAL metadata only| history["EM-29 · optional PostgreSQL on RDS"]
-```
+![Encore Moment system architecture showing the user PC, EC2 reaction detection, and optional RDS event history](docs/images/system-architecture.svg)
 
 The browser keeps recent footage on the PC. When the server detects a reaction, the browser uses the event timestamps to save the matching footage as a WebM in local browser storage (OPFS). The desktop app uses the same session protocol for its playback timeline and highlights.
 
