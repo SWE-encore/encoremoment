@@ -57,7 +57,7 @@ async function showClip(autoplay = false) {
   const m = clip.meta;
   const start = m ? Math.max(0, (m.start_ms - m.media_start_ms) / 1000) : 0;
   const end = m ? Math.min(m.end_ms - m.media_start_ms, m.media_end_ms - m.media_start_ms) / 1000 : 0;
-  $("player").src = m ? clipURL + "#t=" + start + "," + end : clipURL;
+  $("player").src = end > start ? clipURL + "#t=" + start + "," + end : clipURL;
   $("download").href = clipURL;
   $("download").download = file.name;
   $("playback").textContent = "";
@@ -183,7 +183,7 @@ $("start").onclick = async () => {
           $("clip-progress").textContent = "";
           signal("Clip saved · " + clip.id, "saved");
         }
-        if ($("player").paused) {
+        if ($("player").paused && (clip.meta.file_index ?? 1) === 1) {
           $("clips").value = clip.handle.name;
           await showClip(true).catch(err => report("Could not open clip · " + errorText(err)));
         }

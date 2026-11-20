@@ -1,4 +1,5 @@
 <!doctype html><html lang="en"><meta charset="utf-8"><title>Local recorder playback test</title>
+<label><input type="checkbox" id="resize">Resize video during recording</label>
 <button id="run">Run recording test</button><pre id="result"></pre>
 <canvas width="96" height="64"></canvas><video muted playsinline></video>
 <script type="module">
@@ -11,12 +12,15 @@ document.querySelector("#run").onclick = async function () {
   const root = await navigator.storage.getDirectory();
   const temp = "encore-test-" + crypto.randomUUID();
   const dir = await root.getDirectoryHandle(temp,{create:true});
-  const canvas = document.querySelector("canvas"), ctx = canvas.getContext("2d");
+  const canvas = document.querySelector("canvas");
+  canvas.width = 96;
+  const ctx = canvas.getContext("2d");
   const video = document.querySelector("video");
   const audio = new AudioContext(), osc = audio.createOscillator(), dest = audio.createMediaStreamDestination();
   const stream = canvas.captureStream(12);
   stream.addTrack(dest.stream.getAudioTracks()[0]);
   const timer = setInterval(() => {ctx.fillStyle = Math.floor(performance.now()/100)%2 ? "green" : "blue";ctx.fillRect(0,0,96,64);},70);
+  const resize = document.querySelector("#resize").checked;
   let recorder,url;
   try {
     await audio.resume();
@@ -31,29 +35,37 @@ document.querySelector("#run").onclick = async function () {
     recorder.receive({...event,phase:"UPDATE",revision:2});
     for(let i=0;i<60 && !preview && !error;i++) await wait(100);
     if(!preview?.size || saved.length || !recorder.active) throw Error("missing preview while recording");
+    if (resize) canvas.width = 128;
     event.capture.end_ms=performance.now();
     recorder.receive({...event,phase:"FINAL",revision:3});
     for(let i=0;i<260 && !saved.length && !error;i++) await wait(100);
     const autoSaved = saved.length;
     await recorder.stop();
     if (error) throw error;
-    if (autoSaved!==1 || saved.length!==1 || phases.join()!=="OPEN,UPDATE,FINAL") throw Error("incorrect event lifecycle");
+    const expected = resize ? 2 : 1;
+    if (autoSaved!==expected || phases.join()!=="OPEN,UPDATE,FINAL") throw Error("incorrect event lifecycle");
     const clips = await savedClips(dir);
-    if (clips.length!==1) throw Error("saved clip missing");
+    if (clips.length!==expected) throw Error("saved clip missing");
     for await (const name of dir.keys()) if(/^(buffer-|ring-|export-)/.test(name)) throw Error("unused recording still present");
-    const file = await clips[0].handle.getFile();
-    // Check both codec tracks in the recorded container.
-    const header = new TextDecoder().decode(await file.slice(0,8192).arrayBuffer());
-    if(!header.includes("V_VP8") || !header.includes("A_OPUS")) throw Error("missing audio or video track");
-    video.src = url = URL.createObjectURL(file);
-    await video.play();
-    await wait(350);
-    if (!video.videoWidth || video.currentTime <= 0) throw Error("saved clip failed playback");
     if (clips[0].meta.status !== "partial" || !clips[0].meta.gaps.length) throw Error("missing activation gap");
-    video.currentTime = 7;
-    await wait(1200);
-    if (video.currentTime <= 7 || video.error) throw Error("playback failed across the first segment boundary");
-    out.textContent = "PASS · " + file.size + " bytes · " + video.videoWidth + "×" + video.videoHeight + " · VP8 + Opus · " + phases.join(" → ");
+    let bytes = 0;
+    for (const [i, clip] of clips.entries()) {
+      const file = await clip.handle.getFile();
+      bytes += file.size;
+      if (clip.meta.file_index !== i+1 || clip.meta.file_count !== expected) throw Error("incorrect file order");
+      if (i && clip.meta.media_start_ms !== clips[i-1].meta.media_end_ms) throw Error("lost recording at split");
+      const header = new TextDecoder().decode(await file.slice(0,8192).arrayBuffer());
+      if (!header.includes("V_VP8") || !header.includes("A_OPUS")) throw Error("missing audio or video track");
+      video.src = url = URL.createObjectURL(file);
+      await video.play();
+      if (video.videoWidth !== (i ? 128 : 96)) throw Error("incorrect saved resolution");
+      const target = Math.min(7, video.duration / 2);
+      video.currentTime = target;
+      await wait(1200);
+      if (video.currentTime <= target || video.error) throw Error("playback failed across segment boundary");
+      URL.revokeObjectURL(url); url = null;
+    }
+    out.textContent = "PASS · " + expected + " file(s) · " + bytes + " bytes · VP8 + Opus · " + phases.join(" → ");
   } catch (e) {out.textContent="FAIL · "+e;}
   finally {
     if (recorder && !recorder.closed) await recorder.stop();
