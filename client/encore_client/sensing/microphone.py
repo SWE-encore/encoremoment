@@ -58,7 +58,7 @@ class MicrophoneSwitch:
             return f"⚠️ Microphone error: {self.error} (off)"
         if self.session.state is Conn.IDLE:
             return "Microphone: off until Start"
-        if self.session.state is Conn.ENDED:
+        if self.session.state in (Conn.ENDING, Conn.ENDED):
             return "Microphone: off — session ended"
         if self.enabled:
             reading = "reading the device" if self.device_running or self.device is None else "starting…"

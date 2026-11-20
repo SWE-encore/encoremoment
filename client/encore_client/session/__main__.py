@@ -42,12 +42,7 @@ def run_headless(session: Session, driver: ScenarioDriver | None, timeout_s: flo
                 last_state = session.state
                 extra = f" ({session.reason})" if session.reason else ""
                 print(f"[session] {session.state.value}{extra}", flush=True)
-            rows = event_rows(session.view)
-            if rows != last_rows:
-                last_rows = rows
-                print(f"[session] events: {len(rows)}", flush=True)
-                for r in rows:
-                    print(f"           {r['event_id']}  {r['type']:<8} {r['phase']:<6} rev {r['revision']}", flush=True)
+            last_rows = _print_rows(session, last_rows)
             if session.state is Conn.DISCONNECTED and session.retry_at_ms is None:
                 break  # dropped and not reconnecting
             # A live session (no scenario) runs until the timeout.
@@ -58,13 +53,26 @@ def run_headless(session: Session, driver: ScenarioDriver | None, timeout_s: flo
         pass
     dropped = session.stale
     complete = _done(driver) and _done(mic)
-    session.end()
+    session.finish()  # a live session waits for the server to close open reactions
+    while session.state is Conn.ENDING:
+        session.poll()
+        time.sleep(0.02)
+    _print_rows(session, last_rows)  # the FINAL results End waited for
     summary = session.summary()
     audio = f"  audio sent {summary['audio_sent']} dropped {summary['audio_dropped']}" if mic else ""
     print(f"[session] ignored {summary['ignored']}  rejected {summary['rejected']}  "
           f"received {summary['received']}  sent {summary['sent']}{audio}", flush=True)
     session.log.close()
     return 0 if complete and not dropped else 1
+
+
+def _print_rows(session: Session, last_rows):
+    rows = event_rows(session.view)
+    if rows != last_rows:
+        print(f"[session] events: {len(rows)}", flush=True)
+        for r in rows:
+            print(f"           {r['event_id']}  {r['type']:<8} {r['phase']:<6} rev {r['revision']}", flush=True)
+    return rows
 
 
 def _done(source) -> bool:
