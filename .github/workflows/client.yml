@@ -26,7 +26,7 @@ jobs:
           fi
           sudo apt-get update
           sudo apt-get install -y python3-venv python3-gi gir1.2-gstreamer-1.0 \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad gstreamer1.0-libav ffmpeg libegl1 libopengl0 libxcb-cursor0
       - name: Install Python dependencies
         run: |
@@ -37,5 +37,10 @@ jobs:
           .venv/bin/python -c "import gi; gi.require_version('Gst', '1.0'); from gi.repository import Gst; Gst.init(None); print(Gst.version_string())"
           .venv/bin/python -c "from PySide6.QtMultimedia import QMediaPlayer"
           ffmpeg -version
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Tab demo clip and WebM tests
+        run: node --test client/tab-demo/tests/*.test.mjs
       - name: Contract, session, clip, UI and media tests
         run: .venv/bin/python -m pytest -q -rs

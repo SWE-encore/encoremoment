@@ -7,7 +7,9 @@
 - The contract README remains a draft with unresolved decisions. Planned behavior in a design document is not evidence that the implementation is complete.
 - This work combines PR #1 (contract), #2 (player), #3 (session), and the clip UI branch into one application. It did not implement a server or AI service; the session server in `server/` came later ([server/README.md](../server/README.md)).
 
-## Data flow
+The Chrome tab demo sends captured PCM and face frames to the same session server. The server combines their scores and emits event updates. On the PC, `client/tab-demo/clips/` uses these updates to retain and assemble the corresponding local segments. [Tab demo](../client/tab-demo/README.md) · [Server](../server/README.md)
+
+## Desktop client data flow
 
 ```mermaid
 flowchart LR

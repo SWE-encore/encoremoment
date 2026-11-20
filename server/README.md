@@ -7,7 +7,7 @@ PC ──control_update / playback_anchor (text)──▶ ServerSession ──co
    ──audio_chunk (binary, 0.5 s)──▶ windows (0.975 s every 0.48 s) ──▶ model ──▶ detector ──event_update──▶ PC
 ```
 
-It is a first working server, not the full design: sessions live in memory for the life of the process, and there is no HTTP API, authentication, Redis, PostgreSQL or separate inference worker yet.
+It is a first working server, not the full design: sessions live in memory for the life of the process, and there is no HTTP API, authentication, Redis, PostgreSQL or distributed inference service yet.
 
 ## Run
 
@@ -54,17 +54,18 @@ The server prints each acknowledgement and event as it commits it.
 | Windows | `audio.py` | 0.5 s chunks become 0.975 s windows every 0.48 s (one YAMNet frame each). A missing chunk, a time jump or a new generation starts a fresh run, so no window spans missing audio. |
 | Model | `models.py` | YAMNet's AudioSet classes, combined per reaction: laughter = Laughter, Baby laughter, Giggle, Snicker, Belly laugh, Chuckle/chortle; scream = Screaming; gasp = Gasp. |
 | Intensity | `audio.py` | Loudness above the room's quiet level (10th percentile of the last minute), 0 to 1 over 40 dB (R3). |
-| Detector | `detector.py` | OPEN when a reaction's score reaches its trigger (laughter 0.4, scream 0.4, gasp 0.3), UPDATE when it fires again at least 2 s after the last trigger, FINAL after 1.5 s below 60 % of the trigger. Turning the microphone off, the PC ending the session, or 2 s without audio closes open events. |
+| Face frames | [vision.py](encore_server/vision.py) | Runs Face Landmarker in its model environment and returns a smile score for each analysed frame. |
+| Rolling fusion | [fusion.py](encore_server/fusion.py) | Combines audio and face observations from the last five seconds for laughter detection. The [tab demo](../client/tab-demo/README.md) describes the thresholds and capture timing. |
+| Audio-only detector | `detector.py` | OPEN when a reaction's score reaches its trigger (laughter 0.4, scream 0.4, gasp 0.3), UPDATE when it fires again at least 2 s after the last trigger, FINAL after 1.5 s below 60 % of the trigger. Turning the microphone off, the PC ending the session, or 2 s without audio closes open events. |
 | Playback | `session.py` | Each event's capture times are mapped to content timecode through the PC's playback anchors (R3). Without an anchor at or before the event, playback stays `pending`; it is never guessed. If the content or seek epoch changed before the event ended, the end timecode is `null`. |
 
-Every event carries `source.model`, `source.config` (`detector-v1`) and the `aec` status of the audio it came from, so results from different models or settings can be told apart.
+Every event carries `source.model`, `source.config` (including the window and thresholds for fused laughter) and the `aec` status of the audio it came from, so results from different models or settings can be told apart.
 
 ## Not done yet
 
 - **Tuning on real audience audio.** The thresholds are starting values. YAMNet has been checked on silence, a test tone and Google's cat recording (no reaction events), not yet on recorded laughter, screams or gasps in a living room with the content playing. This needs the team's test recordings, ideally with AEC on (EM-10).
-- **Visual intensity.** `intensity.visual` is always `null` until camera analysis exists.
 - **Persistence and the session API** (EM-20, design §IV): sessions and results are lost when the process stops; there is no Start/End HTTP API or authentication.
-- **Separate inference workers.** The model runs in the server process, off the event loop. One process handles a handful of sessions on a CPU.
+- **Distributed inference.** The server runs YAMNet off the event loop and starts a local subprocess when face inference is enabled.
 
 ## Test
 

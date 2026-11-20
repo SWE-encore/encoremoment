@@ -26,6 +26,8 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any
 
+from .fusion import RollingFusion, TabRules
+
 REACTIONS = ("laughter", "scream", "gasp")
 
 
@@ -49,6 +51,7 @@ class Frame:
     microphone: int  # microphone generation of the audio
     camera: int | None  # camera generation in effect, None while the camera is off
     aec: str
+    visual: float | None = None
 
 
 @dataclass
@@ -59,36 +62,49 @@ class _Open:
 
 
 class ReactionDetector:
-    def __init__(self, config: DetectorConfig | None = None) -> None:
+    def __init__(self, config: DetectorConfig | None = None, tab_rules: TabRules | None = None) -> None:
         self.config = config or DetectorConfig()
+        self.tab_rules = tab_rules
+        self.fusion = RollingFusion(tab_rules) if tab_rules else None
         self.open: dict[str, _Open] = {}
         self._count = 0
 
     def push(self, frame: Frame) -> list[tuple[dict[str, Any], str]]:
         """Feed one frame. Returns the events that changed, each with its AEC status."""
         cfg = self.config
+        rules = self.tab_rules
         t = (frame.start_ms + frame.end_ms) // 2
         changes = []
         for reaction in REACTIONS:
-            score = round(min(max(float(frame.scores.get(reaction, 0.0)), 0.0), 1.0), 3)
+            raw = min(max(float(frame.scores.get(reaction, 0.0)), 0.0), 1.0)
+            score = round(raw, 3)
             level = cfg.trigger[reaction]
+            if rules and reaction == "laughter":
+                trigger = self.fusion.push(t, raw, frame.visual)
+                hold = rules.holds(raw, frame.visual)
+            else:
+                trigger = score >= level
+                hold = score >= level * cfg.release_ratio
             cur = self.open.get(reaction)
             if cur is None:
-                if score >= level:
+                if trigger:
                     changes.append(self._open(reaction, frame, t, score))
                 continue
             ev = cur.event
-            if score >= level * cfg.release_ratio:
+            if hold:
                 cur.last_active_ms = frame.end_ms
                 ev["reaction"]["confidence"] = max(ev["reaction"]["confidence"], score)
                 strength = max(ev["intensity"]["audio"], frame.intensity)
-                ev["intensity"].update(combined=strength, audio=strength)
-                if score >= level and t - ev["capture"]["triggers_ms"][-1] >= cfg.refire_ms:
+                visual = ev["intensity"]["visual"]
+                if frame.visual is not None:
+                    visual = max(visual or 0.0, frame.visual)
+                ev["intensity"].update(combined=max(strength, visual or 0.0), audio=strength, visual=visual)
+                if trigger and t - ev["capture"]["triggers_ms"][-1] >= cfg.refire_ms:
                     ev["capture"]["triggers_ms"].append(t)
                     ev["revision"] += 1
                     ev["phase"] = "UPDATE"
                     changes.append((copy.deepcopy(ev), cur.aec))
-            elif frame.end_ms - cur.last_active_ms >= cfg.hangover_ms:
+            elif frame.end_ms - cur.last_active_ms >= (rules.quiet_ms if rules and reaction == "laughter" else cfg.hangover_ms):
                 changes.append(self._final(reaction))
         return changes
 
@@ -103,7 +119,7 @@ class ReactionDetector:
             "revision": 1,
             "phase": "OPEN",
             "reaction": {"type": reaction, "confidence": score},
-            "intensity": {"combined": frame.intensity, "audio": frame.intensity, "visual": None},
+            "intensity": {"combined": max(frame.intensity, frame.visual or 0.0), "audio": frame.intensity, "visual": frame.visual},
             "capture": {"triggers_ms": [t], "start_ms": frame.start_ms, "end_ms": None},
             "generations": {"microphone": frame.microphone, "camera": frame.camera},
         }
@@ -111,6 +127,8 @@ class ReactionDetector:
         return copy.deepcopy(ev), frame.aec
 
     def _final(self, reaction: str):
+        if self.fusion and reaction == "laughter":
+            self.fusion.reset()
         cur = self.open.pop(reaction)
         ev = cur.event
         ev["revision"] += 1

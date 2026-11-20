@@ -82,10 +82,13 @@ class AudioWindows:
         self.next_chunk: int | None = None
         self._buf = bytearray()
 
-    def add(self, header: dict, pcm: bytes) -> list[Window]:
+    def discontinuous(self, header: dict) -> bool:
         expected_ms = self.start_ms + len(self._buf) // 2 * 1000 // AUDIO_RATE
-        if (header["generation"] != self.generation or header["chunk"] != self.next_chunk
-                or abs(header["capture_ms"] - expected_ms) > _JUMP_MS):
+        return (header["generation"] != self.generation or header["chunk"] != self.next_chunk
+                or abs(header["capture_ms"] - expected_ms) > _JUMP_MS)
+
+    def add(self, header: dict, pcm: bytes) -> list[Window]:
+        if self.discontinuous(header):
             self.generation, self.start_ms, self._buf = header["generation"], header["capture_ms"], bytearray()
         self.next_chunk = header["chunk"] + 1
         self._buf += pcm

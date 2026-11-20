@@ -3,7 +3,7 @@
 CSE406 Software Engineering · Group Encore · Hanyang University
 
 This repository brings controlled video playback, audience reaction event delivery, and local clip review into one PC application.
-**The current integration build uses contract fixtures. Real audience video capture, microphone capture, AI inference, and clip generation are not connected yet.**
+The native desktop demo uses contract fixtures for clip review. The Chrome tab demo sends shared audio and video frames to the session server and saves triggered clips locally. [Run the tab demo](client/tab-demo/README.md).
 Submission B defines the current PC-first design; Submission A preserves the earlier smart-TV scope.
 
 ## Quick start
@@ -60,7 +60,7 @@ The default is `artifacts/clip_index.json` in normal mode and `samples/clip_inde
 ```text
 contracts/                  Shared PC/server message contract, fixtures, reference receiver, tests
 server/
-  encore_server/            Session server: encore.v1 WebSocket, YAMNet reaction events
+  encore_server/            Session server, YAMNet and optional face/audio fusion
   tests/                    Detector, session, YAMNet, and client-to-server tests
 client/
   encore_client/
@@ -71,7 +71,11 @@ client/
     clips/                  Saved clip index model, list, and local preview
     sensing/                Camera state model; real device adapters are future work
     ui/                     Integrated workspace, Highlights, shared display helpers
-  tests/                    Unit, delivery, UI, and real media tests
+  tab-demo/                 Chrome demo entry point and launcher
+    sensing/                PCM capture worklet and face-frame selection
+    clips/                  Clip intervals, disk buffer, WebM assembly and saved clip lookup
+    tests/                  Clip policy, codec and browser playback checks
+  tests/                    Native client unit, delivery, UI, and real media tests
   tools/                    Test video generation
   docs/                     Existing EM-23 delivery validation records
 samples/                    Synthetic videos and sample index for the clip UI

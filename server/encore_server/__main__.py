@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from .fusion import TabRules
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -22,7 +23,17 @@ def main(argv: list[str] | None = None) -> int:
                     help="yamnet (needs TensorFlow) or loudness (a stand-in: any loud sound is laughter)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--unix-socket", help="listen at a local socket path for an SSH tunnel")
+    ap.add_argument("--face-python", help="Python inside the MediaPipe environment")
+    ap.add_argument("--face-task", help="Path to face_landmarker.task")
+    ap.add_argument("--smile-threshold", type=float, default=TabRules.smile)
+    ap.add_argument("--demo-quiet-ms", type=int, default=TabRules.quiet_ms,
+                    help="time below the release thresholds before closing a shared-tab clip")
     args = ap.parse_args(argv)
+    if bool(args.face_python) != bool(args.face_task) or not 0 < args.smile_threshold <= 1:
+        ap.error("supply both face options and a smile threshold in (0, 1]")
+    if args.demo_quiet_ms <= 0:
+        ap.error("--demo-quiet-ms must be positive")
 
     from .models import load_model
     from .server import EncoreServer
@@ -35,11 +46,21 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError as exc:
         ap.exit(2, f"cannot load {args.model}: {exc}\n"
                    "Install server/requirements-yamnet.txt, or use --model loudness to test without TensorFlow.\n")
-    say(f"model {model.name}; listening on ws://{args.host}:{args.port}/v1/sessions/<session_id>/stream")
+    say(f"loaded {model.name}")
+    from .vision import FaceWorker
+    face = FaceWorker(args.face_python, args.face_task) if args.face_task else None
     try:
-        asyncio.run(EncoreServer(model, say=say).run(args.host, args.port))
+        if face is not None:
+            say(f"rolling fusion: laughter >= {TabRules.strong_audio} or laughter >= {TabRules.assisted_audio} "
+                f"with smile >= {args.smile_threshold:g} for {TabRules.equivalent_hops} equivalent hops in 5 s; quiet {args.demo_quiet_ms} ms")
+        app = EncoreServer(model, say=say, face_model=face,
+                           smile_threshold=args.smile_threshold, quiet_ms=args.demo_quiet_ms)
+        asyncio.run(app.run(args.host, args.port, unix_socket=args.unix_socket))
     except KeyboardInterrupt:
         pass
+    finally:
+        if face is not None:
+            face.close()
     return 0
 
 
