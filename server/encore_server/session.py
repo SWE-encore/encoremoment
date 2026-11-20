@@ -40,6 +40,7 @@ class ServerSession:
         model: Callable[[bytes], dict[str, float]],
         config: DetectorConfig | None = None,
         *,
+        event_prefix: str = "evt",
         face_model=None,
         smile_threshold: float = TabRules.smile,
         quiet_ms: int = TabRules.quiet_ms,
@@ -63,7 +64,7 @@ class ServerSession:
         self.faces_seen = 0
         self.model = model
         self.view = SessionView(session_id)
-        self.detector = ReactionDetector(config, self.tab_rules)
+        self.detector = ReactionDetector(config, self.tab_rules, event_prefix=event_prefix)
         self.baseline = RoomBaseline()
         self.windows = AudioWindows()
         self.log: list[dict[str, Any]] = []
