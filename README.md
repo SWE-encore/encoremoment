@@ -6,6 +6,14 @@ This repository brings controlled video playback, audience reaction event delive
 The native desktop demo uses contract fixtures for clip review. The Chrome tab demo sends shared audio and video frames to the session server and saves triggered clips locally. [Run the tab demo](client/tab-demo/README.md).
 Submission B defines the current PC-first design; Submission A preserves the earlier smart-TV scope.
 
+## System architecture
+
+![Encore Moment system architecture showing the user PC, EC2 reaction detection, and optional RDS event history](docs/images/system-architecture.svg)
+
+The browser keeps recent footage on the PC. When the server detects a reaction, the browser uses the event timestamps to save the matching footage as a WebM in local browser storage (OPFS). The desktop app uses the same session protocol for its playback timeline and highlights.
+
+The dotted path shows the optional event-history feature developed in EM-29. It stores event records such as the reaction type and timing. [Desktop architecture](docs/architecture.md) · [EM-29 pull request](https://github.com/SWE-encore/encoremoment/pull/15)
+
 ## Quick start
 
 Run commands from the repository root unless noted otherwise. The full player targets **Ubuntu 24.04 / Python 3.12 / PySide6 6.8.3 / GStreamer 1.24**.
