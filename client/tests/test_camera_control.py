@@ -290,3 +290,32 @@ def test_without_a_device_the_camera_is_shown_unavailable(app, tmp_path):
     finally:
         workspace.shutdown()
         workspace.close()
+
+
+def test_mic_and_camera_report_independent_states_in_the_same_workspace(app, tmp_path):
+    from encore_client.sensing.microphone import MicrophoneSwitch
+    from encore_client.ui.workspace import Workspace
+
+    session, _ = live_session(Clock())
+    device = FakeCamera()
+    workspace = Workspace(session, None, tmp_path / "index.json", camera_device=device)
+    try:
+        switch = MicrophoneSwitch(session, None, source="test WAV")
+        workspace.add_microphone(switch)
+        workspace.camera_panel.enable_btn.click()
+        device.listener.on_first_frame(1)
+        session.set_sensor("microphone", True)
+        workspace.refresh()
+        assert "Microphone on" in workspace.microphone.status.text()
+        workspace.microphone.button.click()
+        workspace.refresh()
+        assert "Microphone off" in workspace.microphone.status.text()
+        assert "Camera on" in workspace.camera_panel.indicator.text()
+        assert "Camera" not in workspace.sensing.text()
+        workspace.microphone.button.click()
+        workspace.session_panel.end_btn.click()
+        assert not switch.device_running
+        assert device.closed == [1]
+    finally:
+        workspace.shutdown()
+        workspace.close()
