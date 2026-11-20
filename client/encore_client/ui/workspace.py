@@ -4,11 +4,11 @@ from PySide6.QtWidgets import QLabel, QTabWidget, QVBoxLayout, QWidget
 from ..clips.panel import ClipPanel
 from ..sensing.camera import CameraControl
 from ..session.panel import SessionPanel
-from ..session.session import Conn, event_rows
+from ..session.session import STARTED, event_rows
 from .camera_panel import CameraPanel
 from .formatting import format_ms
 
-ACTIVE = (Conn.CONNECTING, Conn.CONNECTED, Conn.DISCONNECTED)
+ACTIVE = STARTED  # Start pressed, End not: a drop does not stop the devices
 
 
 class Workspace(QWidget):

@@ -48,15 +48,15 @@ def run_headless(session: Session, driver: ScenarioDriver | None, timeout_s: flo
                 print(f"[session] events: {len(rows)}", flush=True)
                 for r in rows:
                     print(f"           {r['event_id']}  {r['type']:<8} {r['phase']:<6} rev {r['revision']}", flush=True)
-            if session.state is Conn.DISCONNECTED:
-                break
+            if session.state is Conn.DISCONNECTED and session.retry_at_ms is None:
+                break  # dropped and not reconnecting
             # A live session (no scenario) runs until the timeout.
             if driver is not None and driver.done and _done(mic):
                 break
             time.sleep(0.05)
     except KeyboardInterrupt:
         pass
-    dropped = session.state is Conn.DISCONNECTED
+    dropped = session.stale
     complete = _done(driver) and _done(mic)
     session.end()
     summary = session.summary()

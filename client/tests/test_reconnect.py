@@ -1,0 +1,340 @@
+"""R11 (EM-20): a dropped session reconnects and recovers without duplicates.
+
+The real PC session against the real session server, with a TCP relay between
+them that the test can cut (a network drop: no close frame either way), stop
+forwarding one direction of (data lost in flight), or take down (the server is
+unreachable). Nothing in the session or the server knows about the relay.
+"""
+
+import math
+import socket
+import struct
+import threading
+import time
+import wave
+from urllib.parse import urlsplit
+
+import pytest
+
+from encore_client.player.anchors import AnchorTracker
+from encore_client.sensing.wav_mic import WavMicrophone
+from encore_client.session.panel import status_text
+from encore_client.session.session import LOST_SESSION, Conn, Session
+from encore_server.models import LoudnessModel
+from encore_server.server import EncoreServer, serve_in_thread
+
+RATE = 16_000
+AUDIO_START_MS = 10_000
+DELAYS_MS = (300, 600, 1_200)
+
+
+class Relay:
+    """A TCP hop between the PC and the server."""
+
+    def __init__(self, upstream_port):
+        self.upstream_port = upstream_port
+        self.drop = {"pc->server": False, "server->pc": False}  # discard bytes going that way
+        self.pairs = []
+        self.port = None
+        self.up()
+
+    def up(self):
+        self.listener = socket.create_server(("127.0.0.1", self.port or 0))
+        self.port = self.listener.getsockname()[1]
+        threading.Thread(target=self._accept, args=(self.listener,), daemon=True).start()
+
+    def down(self):
+        """New connections are refused until ``up()``. Open ones are kept: see ``cut()``."""
+        try:
+            self.listener.shutdown(socket.SHUT_RDWR)  # wakes the blocked accept(); close() alone does not
+        except OSError:
+            pass
+        self.listener.close()
+
+    def cut(self):
+        """Drop every open connection, as a network failure would."""
+        for pair in self.pairs:
+            for sock in pair:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                sock.close()
+        self.pairs = []
+
+    def _accept(self, listener):
+        while True:
+            try:
+                pc, _ = listener.accept()
+            except OSError:
+                return
+            server = socket.create_connection(("127.0.0.1", self.upstream_port))
+            self.pairs.append((pc, server))
+            for src, dst, way in ((pc, server, "pc->server"), (server, pc, "server->pc")):
+                threading.Thread(target=self._pump, args=(src, dst, way), daemon=True).start()
+
+    def _pump(self, src, dst, way):
+        while True:
+            try:
+                data = src.recv(65536)
+            except OSError:
+                data = b""
+            if not data:
+                try:
+                    dst.shutdown(socket.SHUT_WR)  # pass the close on, as a direct connection would
+                except OSError:
+                    pass
+                return
+            if self.drop[way]:
+                continue
+            try:
+                dst.sendall(data)
+            except OSError:
+                return
+
+
+@pytest.fixture
+def server():
+    app = EncoreServer(LoudnessModel(), idle_s=0.3)
+    url, stop = serve_in_thread(app)
+    yield app, urlsplit(url).port
+    stop()
+
+
+@pytest.fixture
+def relay(server):
+    relay = Relay(server[1])
+    yield relay
+    relay.down()
+    relay.cut()
+
+
+@pytest.fixture
+def two_laughs(tmp_path):
+    """Twice: 2 s quiet, 2 s of a loud tone (the stand-in model's laughter), 4 s quiet."""
+    samples = []
+    for seconds, amp in [(2, 0), (2, 0.5), (4, 0)] * 2:
+        samples += [round(amp * 32767 * math.sin(2 * math.pi * 440 * i / RATE)) for i in range(seconds * RATE)]
+    path = tmp_path / "two_laughs.wav"
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+    return path
+
+
+class Clock:
+    def __init__(self, t):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+def wait(session, until, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        session.poll()
+        if until():
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"timed out; state {session.state.value} ({session.reason}), {session.summary()}")
+
+
+def wait_for(until, what, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while not until():
+        assert time.monotonic() < deadline, f"timed out waiting for {what}"
+        time.sleep(0.01)
+
+
+def start(app, relay, sid, delays=DELAYS_MS):
+    """Start a live session through the relay, with the film at 60 s at capture time 9.5 s.
+
+    Returns once the server has applied the microphone-on control and the anchor.
+    """
+    session = Session(f"ws://127.0.0.1:{relay.port}", sid, microphone_on_start=True,
+                      reconnect_delays_ms=delays)
+    session.start()
+    tracker = AnchorTracker(sid, emit=session.send_anchor)
+    tracker.new_content("file:film-a", "Film A")
+    tracker.report(60_000, 1.0, True, capture_ms=9_500)
+    wait(session, lambda: session.acks.get("ctl-microphone-1") == "applied")
+    wait_for(lambda: app.sessions[sid].view.anchors, "the server's anchor")
+    return session
+
+
+def microphone(session, wav):
+    """The WAV as the microphone, its first sample at AUDIO_START_MS. Advance ``clock.t`` and pump."""
+    clock = Clock(AUDIO_START_MS)
+    mic = WavMicrophone(session, wav, clock=clock)
+    mic.pump()  # fixes the capture time of the first sample
+    return mic, clock
+
+
+def finals(session):
+    return sum(e["phase"] == "FINAL" for e in session.view.events.values())
+
+
+def outgoing_since_last_open(session):
+    entries = session.log.entries
+    last_open = max(i for i, e in enumerate(entries) if e["what"] == "open")
+    return [e["msg"] for e in entries[last_open + 1 :] if e["what"] == "out"]
+
+
+def assert_clean(session, server_session):
+    assert session.view.ignored == {} and session.view.rejected == {} and session.bad_messages == 0
+    assert server_session.view.rejected == {} and server_session.invalid == 0
+
+
+def test_a_dropped_session_reconnects_and_resumes_after_its_cursor(server, relay, two_laughs):
+    app, _ = server
+    session = start(app, relay, "ses-r11-resume")
+    server_session = app.sessions["ses-r11-resume"]
+    mic, clock = microphone(session, two_laughs)
+    clock.t += 8_000  # the first laugh and its silence
+    mic.pump()
+    wait(session, lambda: finals(session) == 1)
+    cursor = session.view.next_cursor - 1
+
+    relay.cut()
+    wait(session, lambda: session.state is Conn.DISCONNECTED)
+    assert session.stale and "Reconnecting in" in status_text(session)
+    clock.t += 1_000  # captured while disconnected: dropped, never sent late (R9)
+    mic.pump()
+    dropped = session.audio_dropped
+    assert dropped > 0
+
+    wait(session, lambda: session.state is Conn.CONNECTED)
+    assert session.reconnects == 1 and "reconnected after 1 drop" in status_text(session)
+    (attempt,) = [e for e in session.log.entries if e["what"] == "reconnect"]
+    assert attempt["after"] == cursor  # resume after the last applied result
+    assert app.sessions["ses-r11-resume"] is server_session  # the server kept the session
+
+    clock.t += 7_000  # the second laugh
+    mic.pump()
+    wait(session, lambda: finals(session) == 2)
+    session.end()
+
+    first, second = sorted(session.view.events.values(), key=lambda e: e["event_id"])
+    assert (first["event_id"], second["event_id"]) == ("evt-0001", "evt-0002")
+    assert second["capture"]["start_ms"] > AUDIO_START_MS + 9_000  # after the gap
+    assert second["playback"]["title"] == "Film A"
+    # Nothing the PC already had was sent again: no duplicate cursor, revision or control.
+    assert_clean(session, server_session)
+    assert server_session.view.audio_gaps == dropped  # the server sees the dropped audio as a gap
+
+
+def test_results_lost_in_flight_are_replayed_once(server, relay, two_laughs):
+    app, _ = server
+    session = start(app, relay, "ses-r11-replay")
+    server_session = app.sessions["ses-r11-replay"]
+    relay.drop["server->pc"] = True  # results go out but never arrive
+    mic, clock = microphone(session, two_laughs)
+    clock.t += 8_000
+    mic.pump()
+    wait_for(lambda: any(m["event"]["phase"] == "FINAL" for m in server_session.log), "the server's FINAL")
+    session.poll()
+    assert session.view.events == {}
+
+    relay.cut()
+    relay.drop["server->pc"] = False
+    wait(session, lambda: finals(session) == 1)
+    session.end()
+
+    (attempt,) = [e for e in session.log.entries if e["what"] == "reconnect"]
+    assert attempt["after"] == 0
+    assert session.view.next_cursor - 1 == len(server_session.log)  # every result, each applied once
+    (event,) = session.view.events.values()
+    assert event == server_session.log[-1]["event"]
+    assert_clean(session, server_session)
+
+
+def test_controls_are_synced_first_with_their_original_keys(server, relay):
+    app, _ = server
+    session = start(app, relay, "ses-r11-controls")
+    server_session = app.sessions["ses-r11-controls"]
+    relay.drop["pc->server"] = True
+    lost = session.set_sensor("microphone", False)  # sent, lost in flight: never acknowledged
+    relay.cut()
+    relay.drop["pc->server"] = False
+    wait(session, lambda: session.state is Conn.DISCONNECTED)
+    made_offline = session.set_sensor("microphone", True)  # made while disconnected
+
+    wait(session, lambda: session.acks.get(made_offline["idempotency_key"]) is not None)
+    session.end()
+
+    first = session.controls[0]
+    assert session.acks == {first["idempotency_key"]: "duplicate", lost["idempotency_key"]: "applied",
+                            made_offline["idempotency_key"]: "applied"}
+    # On the new connection the controls go first, unchanged, then the newest anchor.
+    sent = outgoing_since_last_open(session)
+    assert sent[:3] == [first, lost, made_offline]
+    assert sent[3]["kind"] == "playback_anchor"
+    mic = server_session.view.sensors["microphone"]
+    assert (mic.enabled, mic.generation) == (True, 3) == (session.view.sensors["microphone"].enabled,
+                                                          session.view.sensors["microphone"].generation)
+    assert server_session.view.sensors["camera"].enabled is False  # never enabled
+    assert_clean(session, server_session)  # a changed message under a used key would be rejected
+
+
+def test_a_server_that_lost_the_session_is_not_shown_as_recovered(server, relay):
+    app, _ = server
+    session = start(app, relay, "ses-r11-lost")
+    relay.cut()
+    wait(session, lambda: session.state is Conn.DISCONNECTED)
+    del app.sessions["ses-r11-lost"]  # as after a server restart
+
+    wait(session, lambda: session.lost)
+    assert session.state is Conn.DISCONNECTED and session.reason == LOST_SESSION
+    assert session.retry_in_ms is None and "no longer has this session" in status_text(session)
+    attempts = session.attempt
+    time.sleep(2 * DELAYS_MS[-1] / 1000)
+    session.poll()
+    assert session.state is Conn.DISCONNECTED and session.attempt == attempts  # no more attempts
+    session.end()
+
+
+def test_retries_back_off_until_the_server_is_reachable(server, relay):
+    app, _ = server
+    session = start(app, relay, "ses-r11-backoff", delays=(100, 200, 400))
+    relay.down()
+    relay.cut()
+    wait(session, lambda: session.attempt >= 3 and session.state is Conn.DISCONNECTED)
+    relay.up()
+    wait(session, lambda: session.state is Conn.CONNECTED)
+    session.end()
+
+    entries = session.log.entries
+    waits = [entries[i]["t_ms"] - entries[i - 1]["t_ms"]
+             for i, e in enumerate(entries) if e["what"] == "reconnect"]
+    assert all(entries[i - 1]["what"] == "closed" for i, e in enumerate(entries) if e["what"] == "reconnect")
+    assert [w >= d for w, d in zip(waits, (100, 200, 400, 400))] == [True] * len(waits)
+    assert len(waits) >= 4 and session.reconnects == 1 and session.attempt == 0
+
+
+def test_a_server_unreachable_at_start_is_retried_without_counting_a_reconnect(relay):
+    relay.down()
+    session = Session(f"ws://127.0.0.1:{relay.port}", "ses-r11-late-server", microphone_on_start=True,
+                      reconnect_delays_ms=(100,))
+    session.start()
+    wait(session, lambda: session.attempt >= 1)
+    relay.up()
+    wait(session, lambda: session.acks.get("ctl-microphone-1") == "applied")
+    assert status_text(session) == "Connected"  # not "reconnected after a drop": there was none
+    session.end()
+    assert session.reconnects == 0 and session.attempt == 0
+
+
+def test_end_while_waiting_to_reconnect_stops_the_attempts(server, relay):
+    app, _ = server
+    session = start(app, relay, "ses-r11-end", delays=(200,))
+    relay.down()
+    relay.cut()
+    wait(session, lambda: session.retry_in_ms is not None)
+    session.end()
+    time.sleep(0.4)
+    session.poll()
+    assert session.state is Conn.ENDED and session.retry_in_ms is None
+    assert not any(e["what"] == "reconnect" for e in session.log.entries)

@@ -7,17 +7,28 @@ view of that session. It
   audio in binary frames),
 - applies every server message through the shared contract receiver, so a
   result delivered twice still gives one event (contracts/README.md),
-- tracks the connection and reports when it drops (R9, R11), and
+- tracks the connection and reports when it drops (R9, R11),
+- reconnects after a drop when given ``reconnect_delays_ms`` (R11, EM-20), and
 - writes every step to a JSON Lines delivery log for reproduction.
 
 It does no Qt work and never blocks: the UI (or the headless runner) calls
-``poll()`` on a timer. Reconnection and replay after a drop are R11 work
-(EM-20) and are not done here; a dropped session stays ``disconnected``.
+``poll()`` on a timer.
 
 Messages the PC makes itself (``set_sensor``, ``send_anchor``) share one
 ``seq`` counter, as in contracts/samples. Sensor controls made before the
 connection opens are sent first when it opens, then the newest anchor, so
 the server learns sensor state before anything else (R9, R11).
+
+Reconnection (R11, EM-20). After a drop the session waits, then opens the
+stream again with ``?after=<last applied cursor>``, so the server sends only
+the results the PC has not applied. On every reconnect the PC first re-sends
+every sensor control it has made, unchanged (same ``idempotency_key``, same
+``seq``): the server acknowledges the ones it already has as duplicates and
+applies the ones lost in flight or made while disconnected. Then the newest
+anchor. Audio captured while disconnected is dropped, never sent late (R9).
+If a control the server had applied comes back ``applied`` again, the server
+no longer has this session (it restarted): the session stays disconnected
+with that reason instead of being shown as recovered.
 """
 
 from __future__ import annotations
@@ -55,7 +66,13 @@ class Conn(str, Enum):
     CONNECTING = "connecting"
     CONNECTED = "connected"
     DISCONNECTED = "disconnected"  # dropped or never reached; results may be stale
+    RECONNECTING = "reconnecting"  # dropped, opening the stream again (R11); results may be stale
     ENDED = "ended"  # user pressed End
+
+
+STARTED = (Conn.CONNECTING, Conn.CONNECTED, Conn.DISCONNECTED, Conn.RECONNECTING)  # Start pressed, End not
+RECONNECT_DELAYS_MS = (1_000, 2_000, 5_000, 10_000)  # the last one repeats until End
+LOST_SESSION = "the server no longer has this session (it may have restarted); results after the drop are lost"
 
 
 # ---- transport ---------------------------------------------------------------
@@ -201,10 +218,16 @@ class Session:
         log: DeliveryLog | None = None,
         clock: Callable[[], int] = monotonic_ms,
         microphone_on_start: bool = False,
+        reconnect_delays_ms: tuple[int, ...] | None = None,
     ) -> None:
         """``microphone_on_start``: Start turns the microphone on (R11
         ``enable_requested_audio``). Leave it off when a ScenarioDriver sends
         the sample's own controls, or the two would collide.
+
+        ``reconnect_delays_ms``: after a drop, wait this long before each
+        attempt to reconnect; the last delay repeats until End (R11). None
+        (the default) leaves a dropped session disconnected, as scenarios
+        need: a fake server replays its script from the start.
         """
         self.session_id = session_id or new_session_id()
         if not _SESSION_ID.match(self.session_id):
@@ -223,6 +246,15 @@ class Session:
         self.bad_messages = 0
         self.last_anchor: dict[str, Any] | None = None
         self.microphone_on_start = microphone_on_start
+        self.reconnect_delays_ms = tuple(reconnect_delays_ms or ())
+        self.controls: list[dict[str, Any]] = []  # every control_update made, in order (R11 resync)
+        self.acks: dict[str, str] = {}  # idempotency_key -> the server's last ack status
+        self.reconnects = 0  # drops recovered
+        self.opened = False  # the stream has been open at least once
+        self.attempt = 0  # reconnect attempts since the last drop
+        self.retry_at_ms: int | None = None  # when the next attempt starts
+        self.lost = False  # the server lost the session: no more attempts
+        self._server_had: set[str] = set()  # controls the server had acknowledged when this connection opened
         self.log = log or DeliveryLog(None, clock)
         self._seq = 0
         self._audio_generation: int | None = None
@@ -243,9 +275,26 @@ class Session:
         if self.microphone_on_start:
             self.set_sensor("microphone", True)
 
+    def reconnect(self) -> None:
+        """Open the stream again after a drop, resuming after the last applied cursor (R11).
+
+        ``poll()`` calls this on schedule when ``reconnect_delays_ms`` is set;
+        a "Reconnect now" control may call it directly.
+        """
+        if self.state is not Conn.DISCONNECTED or self.lost:
+            raise RuntimeError(f"reconnect() in state {self.state.value}")
+        self.attempt += 1
+        self.retry_at_ms = None
+        after = self.view.next_cursor - 1
+        self.log.write("reconnect", attempt=self.attempt, after=after)
+        self._set_state(Conn.RECONNECTING)
+        self._transport = self._factory(f"{self.url}?after={after}")
+        self._transport.start()
+
     def end(self) -> None:
         if self.state in (Conn.IDLE, Conn.ENDED):
             return
+        self.retry_at_ms = None
         self._set_state(Conn.ENDED)
         self.log.write("end", unsent=len(self.unsent))
         if self._transport is not None:
@@ -258,8 +307,10 @@ class Session:
 
         The message is applied to the local view either way: a camera turned
         off is off whether or not the server heard about it. Messages made
-        before the connection opens are sent when it opens; after a drop they
-        stay in ``unsent`` until reconnection exists (R11, EM-20).
+        before the connection opens are sent when it opens. After a drop,
+        controls are re-sent when the session reconnects and an anchor is
+        superseded by the newest one; without ``reconnect_delays_ms`` they stay
+        in ``unsent`` (R11, EM-20).
         """
         if msg.get("kind") not in PC_TO_SERVER:
             raise ValueError(f"not a PC-to-server message: {msg.get('kind')!r}")
@@ -268,6 +319,8 @@ class Session:
         if msg.get("session_id") != self.session_id:
             raise ValueError("message belongs to another session")
         self.view.receive("pc->server", msg)
+        if msg["kind"] == "control_update":
+            self.controls.append(msg)
         return self._transmit(msg)
 
     def send_audio(self, pcm: bytes, capture_ms: int, aec: str = "off") -> bool:
@@ -422,22 +475,61 @@ class Session:
             if what == "open":
                 if self.state is Conn.ENDED:
                     continue
-                self._set_state(Conn.CONNECTED)
-                self.received_at_open = self.received
-                self.log.write("open")
-                queued, self.unsent = self.unsent, []
-                for msg in queued:  # sensor controls made before the connection opened
-                    self._transmit(msg)
-                if self.last_anchor is not None:
-                    self._send_last_anchor()
+                self._on_open()
             elif what == "message":
                 self._on_message(data)
+                if self.lost:
+                    self._give_up()
+                    break  # the transport is closed; what is left of it is not read
             elif what == "closed":
                 self.log.write("closed", reason=data)
                 if self.state is not Conn.ENDED:
                     self.reason = data
                     self._set_state(Conn.DISCONNECTED)
+                    self._schedule_retry()
+        if (self.state is Conn.DISCONNECTED and self.retry_at_ms is not None
+                and self._clock() >= self.retry_at_ms):
+            self.reconnect()
+            changed = True
         return changed
+
+    def _on_open(self) -> None:
+        resumed = self.opened  # not a first connection that needed retries
+        self.opened = True
+        self._set_state(Conn.CONNECTED)
+        self.received_at_open = self.received
+        self.log.write("open", reconnect=resumed)
+        if resumed:
+            self.reconnects += 1
+        self.attempt = 0
+        # Controls first, unchanged, in the order they were made (R11): on the
+        # first open these are the ones made before it; on a reconnect, all of
+        # them, so the server applies any it missed and acknowledges the rest
+        # as duplicates.
+        self._server_had = {k for k, status in self.acks.items() if status in ("applied", "duplicate")}
+        queued, self.unsent = self.unsent, []
+        for msg in self.controls:
+            self._transmit(msg)
+        for msg in queued:
+            if msg["kind"] not in ("control_update", "playback_anchor"):  # the newest anchor follows
+                self._transmit(msg)
+        if self.last_anchor is not None:
+            self._send_last_anchor()
+
+    def _schedule_retry(self) -> None:
+        if self.reconnect_delays_ms and not self.lost:
+            delay = self.reconnect_delays_ms[min(self.attempt, len(self.reconnect_delays_ms) - 1)]
+            self.retry_at_ms = self._clock() + delay
+
+    def _give_up(self) -> None:
+        """The server lost the session: say so and stop, instead of showing it as recovered."""
+        self.log.write("lost", reason=LOST_SESSION)
+        transport, self._transport = self._transport, None
+        if transport is not None:
+            transport.close()
+        self.retry_at_ms = None
+        self.reason = LOST_SESSION
+        self._set_state(Conn.DISCONNECTED)
 
     def _on_message(self, text: str | bytes) -> None:
         self.received += 1
@@ -455,13 +547,23 @@ class Session:
             return
         self.log.write("in", msg=msg)
         self.view.receive("server->pc", msg)
+        if msg.get("kind") == "control_ack" and msg.get("session_id") == self.session_id:
+            key, status = msg.get("idempotency_key"), msg.get("status")
+            if status == "applied" and key in self._server_had:
+                self.lost = True  # it had this control already: it would have said duplicate
+            self.acks[key] = status
 
     # ---- state -----------------------------------------------------------------
 
     @property
+    def retry_in_ms(self) -> int | None:
+        """Time until the next reconnect attempt, or None if none is scheduled."""
+        return None if self.retry_at_ms is None else max(0, self.retry_at_ms - self._clock())
+
+    @property
     def stale(self) -> bool:
         """Live results may be out of date: the stream dropped (R9)."""
-        return self.state is Conn.DISCONNECTED
+        return self.state in (Conn.DISCONNECTED, Conn.RECONNECTING)
 
     def _set_state(self, state: Conn) -> None:
         self.state = state
@@ -475,6 +577,7 @@ class Session:
             "received": self.received,
             "sent": self.sent,
             "unsent": len(self.unsent),
+            "reconnects": self.reconnects,
             "audio_sent": self.audio_sent,
             "audio_dropped": self.audio_dropped,
             "bad_messages": self.bad_messages,
