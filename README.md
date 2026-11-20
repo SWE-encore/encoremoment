@@ -2,17 +2,19 @@
 
 CSE406 Software Engineering · Group Encore · Hanyang University
 
-This repository brings controlled video playback, audience reaction event delivery, and local clip review into one PC application.
-The native desktop demo uses contract fixtures for clip review. The Chrome tab demo sends shared audio and video frames to the session server and saves triggered clips locally. [Run the tab demo](client/tab-demo/README.md).
-Submission B defines the current PC-first design; Submission A preserves the earlier smart-TV scope.
+Encore Moment is a PC application designed to capture an audience’s reactions while they watch a video. When a viewer laughs, screams, or gasps, the system saves the moments before and after the reaction as a local clip for review in Tonight’s Highlights.
 
 ## System architecture
 
-![Encore Moment system architecture showing the user PC, EC2 reaction detection, and optional RDS event history](docs/images/system-architecture.svg)
+![Target architecture. The PC sends microphone audio and sampled audience-camera frames to the server. The Kubernetes inference service detects reactions and signals the PC to save a local clip.](docs/images/system-architecture.svg)
 
-The browser keeps recent footage on the PC. When the server detects a reaction, the browser uses the event timestamps to save the matching footage as a WebM in local browser storage (OPFS). The desktop app uses the same session protocol for its playback timeline and highlights.
+The desktop client uses the viewer’s camera and microphone. The camera starts off. When the viewer enables it, the client keeps recent audience footage in a rolling disk buffer and sends sampled camera frames for analysis. The content player provides an echo-cancellation reference so the server can distinguish audience sounds from the soundtrack. With the camera off, microphone-based detection can still add events to the timeline.
 
-The dotted path shows the optional event-history feature developed in EM-29. It stores event records such as the reaction type and timing. [Desktop architecture](docs/architecture.md) · [EM-29 pull request](https://github.com/SWE-encore/encoremoment/pull/15)
+The server combines audio and facial cues and sends a timestamped recording signal back to the PC. **OPEN** protects the available footage starting 15 seconds before the trigger. **UPDATE** extends the window on a repeat detection. **FINAL** schedules local export once the post-event footage is available. The default window ends 10 seconds after the trigger.
+
+The target server has a session API, a Redis work queue, an inference worker, and PostgreSQL event storage. Docker Compose on AWS EC2 is the initial deployment target. The same services must also be deployable on a GPU-capable **Kubernetes** cluster under Requirement 13. The dotted EM-29 path shows optional managed PostgreSQL history on Amazon RDS for finalized event metadata. [Submission B specifications](documents/submission-b/sections/specifications.tex) · [EM-29](https://github.com/SWE-encore/encoremoment/pull/15)
+
+For a demonstration, the Chrome prototype substitutes shared-tab audio and frames for the desktop sensors. The native desktop demo uses fixtures for clip review. [Run the prototype](client/tab-demo/README.md) · [Desktop implementation](docs/architecture.md)
 
 ## Quick start
 
