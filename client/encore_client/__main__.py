@@ -99,8 +99,8 @@ def main(argv=None):
                 if args.autoplay:
                     win.player.play()
         if mic is not None:
-            workspace.sensing.setText("Camera: Off — capture unavailable\n"
-                                      f"Microphone: stand-in file {args.mic_wav.name} — no real capture")
+            workspace.sensing.setText(
+                f"Microphone: stand-in file {args.mic_wav.name} — no real capture")
             mic_timer = QTimer(win)
             mic_timer.timeout.connect(mic.pump)
             mic_timer.start(50)
