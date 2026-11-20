@@ -4,6 +4,11 @@ CSE406 Software Engineering · Group Encore · Hanyang University
 
 Encore Moment is a PC application designed to capture an audience’s reactions while they watch a video. When a viewer laughs, screams, or gasps, the system saves the moments before and after the reaction as a local clip for review in Tonight’s Highlights.
 
+<p>
+  <a href="https://giphy.com/gifs/OnceInHollywood-leonardo-dicaprio-leo-kd9BlRovbPOykLBMqX"><img src="https://media.giphy.com/media/kd9BlRovbPOykLBMqX/giphy.gif" width="280" alt="Leonardo DiCaprio leans forward in his chair and points at the TV."></a><br>
+  <em>By the time you hit record, the moment’s already over.</em>
+</p>
+
 ## System architecture
 
 ![Target architecture. The PC sends microphone audio and sampled audience-camera frames to the server. The Kubernetes inference service detects reactions and signals the PC to save a local clip.](docs/images/system-architecture.svg)
