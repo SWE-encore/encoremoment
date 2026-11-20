@@ -1,5 +1,6 @@
 import json
 import struct
+import threading
 import unittest
 
 from encore_server.contract import schema_errors
@@ -36,14 +37,18 @@ class PairedDemo(unittest.TestCase):
         data = struct.pack("!I", len(header)) + header + bytes(16000)
         if paired:
             data = MAGIC + struct.pack("!IQ", generation, index*500+499+shift) + bytes(RGB_BYTES) + data
-        return self.session.on_audio(data)
+        out = self.session.on_audio(data)
+        # Simulate the time between real packets, deterministically.
+        if not getattr(self, "blocked", False):
+            self.session._collect_face(grace=.5)
+        return out
 
     def test_fusion_and_replay(self):
         for i in range(4):
             self.packet(i)
         self.assertFalse(self.session.log)
         self.smile = .20
-        for i in range(4, 12):
+        for i in range(4, 15):
             self.packet(i)
             self.packet(i)
         self.session.end()
@@ -57,12 +62,12 @@ class PairedDemo(unittest.TestCase):
     def test_neutral_face_and_missing_face_are_distinct(self):
         self.packet(0)
         self.smile = 0.0
-        score = self.packet(1)[0]
-        self.assertTrue(score["face_detected"])
-        self.assertEqual((score["faces_seen"],score["face_frames"]), (1,2))
+        self.packet(1)
+        self.assertTrue(self.session.face_detected)
+        self.assertEqual((self.session.faces_seen,self.session.face_frames), (1,2))
         self.smile = None
-        score = self.packet(2)[0]
-        self.assertFalse(score["face_detected"])
+        self.packet(2)
+        self.assertFalse(self.session.face_detected)
         self.assertFalse(self.session.log)
 
     def test_stale_camera_and_audio_only(self):
@@ -71,7 +76,7 @@ class PairedDemo(unittest.TestCase):
         self.packet(0, paired=False)
         self.audio.laughter = .25
         self.packet(1, paired=False)
-        self.assertFalse(self.session.log)
+        self.assertEqual(self.session.log[0]["event"]["phase"], "OPEN")
         self.audio.laughter = .4
         self.packet(2, paired=False)
         self.assertIsNone(self.session.log[0]["event"]["intensity"]["visual"])
@@ -126,3 +131,25 @@ class PairedDemo(unittest.TestCase):
         for i in range(4):
             self.packet(i, shift=5000)
         self.assertFalse(self.session.log)
+
+    def test_strong_audio_while_vision_blocked(self):
+        started, release = threading.Event(), threading.Event()
+        def face(rgb):
+            started.set()
+            release.wait(2)
+            return 1.
+        self.blocked = True
+        self.session.face_model = face
+        self.audio.laughter = .25
+        try:
+            self.packet(0)
+            self.assertTrue(started.wait(1))
+            self.packet(1)
+            self.assertEqual(self.session.log[0]["event"]["phase"], "OPEN")
+            self.assertFalse(self.session.pending_face[-1].done())
+            self.control("camera", False, 2)
+            release.set()
+            self.session._collect_face(grace=1)
+            self.assertFalse(self.session.smiles)
+        finally:
+            release.set()

@@ -2,7 +2,8 @@
 <button id="run">Run recording test</button><pre id="result"></pre>
 <canvas width="96" height="64"></canvas><video muted playsinline></video>
 <script type="module">
-import {ClipBuffer,savedClips} from "../clips.js?v=3";
+import {ClipBuffer} from "../clips/buffer.js";
+import {savedClips} from "../clips/store.js";
 const wait = ms => new Promise(r => setTimeout(r,ms));
 const out = document.querySelector("#result");
 document.querySelector("#run").onclick = async function () {
@@ -24,7 +25,7 @@ document.querySelector("#run").onclick = async function () {
     recorder = new ClipBuffer(stream,dir,{onPreview:b=>{preview=b;},onSaved:c=>saved.push(c),onSignal:p=>phases.push(p),onError:e=>{error=e;}});
     out.textContent = "Capturing synthetic video and audio";
     await wait(5000); // exercise a complete rotation and pre-event footage
-    const event = {event_id:"evt-0001",reaction:{type:"laughter"},capture:{end_ms:performance.now()}};
+    const event = {event_id:"evt-0001",reaction:{type:"laughter"},generations:{camera:1},capture:{triggers_ms:[Math.round(performance.now())],end_ms:null}};
     recorder.receive({...event,phase:"OPEN",revision:1});
     recorder.receive({...event,phase:"OPEN",revision:1});
     recorder.receive({...event,phase:"UPDATE",revision:2});
@@ -32,14 +33,14 @@ document.querySelector("#run").onclick = async function () {
     if(!preview?.size || saved.length || !recorder.active) throw Error("missing preview while recording");
     event.capture.end_ms=performance.now();
     recorder.receive({...event,phase:"FINAL",revision:3});
-    await wait(3400);
+    for(let i=0;i<260 && !saved.length && !error;i++) await wait(100);
     const autoSaved = saved.length;
     await recorder.stop();
     if (error) throw error;
     if (autoSaved!==1 || saved.length!==1 || phases.join()!=="OPEN,UPDATE,FINAL") throw Error("incorrect event lifecycle");
     const clips = await savedClips(dir);
     if (clips.length!==1) throw Error("saved clip missing");
-    for await (const name of dir.keys()) if(name.startsWith("buffer-")) throw Error("unused recording still present");
+    for await (const name of dir.keys()) if(/^(buffer-|ring-|export-)/.test(name)) throw Error("unused recording still present");
     const file = await clips[0].handle.getFile();
     // Check both codec tracks in the recorded container.
     const header = new TextDecoder().decode(await file.slice(0,8192).arrayBuffer());
@@ -48,6 +49,10 @@ document.querySelector("#run").onclick = async function () {
     await video.play();
     await wait(350);
     if (!video.videoWidth || video.currentTime <= 0) throw Error("saved clip failed playback");
+    if (clips[0].meta.status !== "partial" || !clips[0].meta.gaps.length) throw Error("missing activation gap");
+    video.currentTime = 7;
+    await wait(1200);
+    if (video.currentTime <= 7 || video.error) throw Error("playback failed across the first segment boundary");
     out.textContent = "PASS · " + file.size + " bytes · " + video.videoWidth + "×" + video.videoHeight + " · VP8 + Opus · " + phases.join(" → ");
   } catch (e) {out.textContent="FAIL · "+e;}
   finally {

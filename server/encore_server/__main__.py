@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from .detector import TabRules
+from .fusion import TabRules
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -51,8 +51,8 @@ def main(argv: list[str] | None = None) -> int:
     face = FaceWorker(args.face_python, args.face_task) if args.face_task else None
     try:
         if face is not None:
-            say(f"tab-v2: laughter >= {TabRules.strong_audio} or laughter >= {TabRules.assisted_audio} "
-                f"with smile >= {args.smile_threshold:g}; quiet {args.demo_quiet_ms} ms")
+            say(f"rolling fusion: laughter >= {TabRules.strong_audio} or laughter >= {TabRules.assisted_audio} "
+                f"with smile >= {args.smile_threshold:g} for {TabRules.equivalent_hops} equivalent hops in 5 s; quiet {args.demo_quiet_ms} ms")
         app = EncoreServer(model, say=say, face_model=face,
                            smile_threshold=args.smile_threshold, quiet_ms=args.demo_quiet_ms)
         asyncio.run(app.run(args.host, args.port, unix_socket=args.unix_socket))

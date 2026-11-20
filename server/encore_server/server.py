@@ -24,7 +24,8 @@ from urllib.parse import parse_qs, urlsplit
 from websockets.asyncio.server import serve, unix_serve
 from websockets.exceptions import ConnectionClosed
 
-from .detector import DetectorConfig, Frame, TabRules
+from .detector import DetectorConfig, Frame
+from .fusion import TabRules
 from .session import IDLE_S, ServerSession
 from .stream import messages_with_idle
 

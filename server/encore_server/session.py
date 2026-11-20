@@ -18,12 +18,17 @@ from __future__ import annotations
 import json
 import time
 from collections import Counter, deque
+from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any, Callable
 
 from .vision import MAGIC, unpack_pair
-from .audio import AudioWindows, RoomBaseline, rms_db
+from .audio import HOP_MS, AudioWindows, RoomBaseline, rms_db
 from .contract import PC_TO_SERVER, SessionView, decode_audio_frame, schema_errors
-from .detector import DetectorConfig, Frame, ReactionDetector, TabRules
+from .detector import DetectorConfig, Frame, ReactionDetector
+from .fusion import TabRules, visual_for_hop
+
+_FACE_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="encore-face")
+FACE_GRACE_S = .08
 
 IDLE_S = 2.0  # no audio for this long while an event is open: the stream stopped
 
@@ -49,7 +54,11 @@ class ServerSession:
         self.session_id = session_id
         self.face_model = face_model
         self.tab_rules = TabRules(smile=smile_threshold, quiet_ms=quiet_ms) if face_model is not None else None
-        self.smiles = deque(maxlen=12)
+        self.smiles = deque(maxlen=128)
+        self.pending_face = None
+        self.face_detected = None
+        self.face_infer_ms = None
+        self.face_chunk = None
         self.face_frames = 0
         self.faces_seen = 0
         self.model = model
@@ -104,20 +113,34 @@ class ServerSession:
             return []
         if self._apply(header)[0] != "applied":
             return []  # old microphone generation (R8) or a retried chunk
-        if rgb is not None:
-            image_smile = self.face_model(rgb)
-            self.face_frames += 1
-            self.faces_seen += int(image_smile is not None)
-            self.smiles.append((image_ms, image_smile))
+        out = []
+        if self.tab_rules and self.windows.next_chunk is not None and self.windows.discontinuous(header):
+            self._reset_media()
+            out += self._commit(self.detector.close_all())
+        self._collect_face()
+        if rgb is not None and self.pending_face is None:
+            chunk_end = header["capture_ms"] + header["samples"] * 1000 // header["sample_rate"]
+            if header["capture_ms"] <= image_ms <= chunk_end + HOP_MS:
+                future = _FACE_POOL.submit(self._infer_face, rgb)
+                self.pending_face = (image_ms, header["chunk"], future)
         self.audio_chunks += 1
         self._last_audio = self._clock()
-        out = []
         for w in self.windows.add(header, pcm):
-            frame = Frame(w.start_ms, w.end_ms, self.model(w.pcm), self.baseline.strength(rms_db(w.pcm)),
+            started = time.monotonic()
+            scores = self.model(w.pcm)
+            audio_ms = round((time.monotonic() - started) * 1000, 1)
+            frame = Frame(w.start_ms, w.end_ms, scores, self.baseline.strength(rms_db(w.pcm)),
                           w.generation, self._camera_generation(), w.aec)
             if self.tab_rules and frame.camera is not None:
-                frame.visual = max((score for t, score in self.smiles
-                                    if w.start_ms <= t < w.end_ms and score is not None), default=None)
+                center = (w.start_ms + w.end_ms) // 2
+                grace = 0
+                raw = frame.scores.get("laughter", 0)
+                if self.pending_face and self.tab_rules.assisted_audio * self.tab_rules.release_ratio <= raw < self.tab_rules.strong_audio:
+                    face_ms, _, _ = self.pending_face
+                    if face_ms is not None and center - HOP_MS // 2 <= face_ms < center + HOP_MS // 2:
+                        grace = FACE_GRACE_S
+                self._collect_face(grace)
+                frame.visual = visual_for_hop(self.smiles, center)
             if self._on_frame is not None:
                 self._on_frame(frame)
             changes = self.detector.push(frame)
@@ -125,8 +148,12 @@ class ServerSession:
                 rules = self.tab_rules
                 active = self.detector.open.get("laughter")
                 out.append({"kind": "demo_scores", "laughter": frame.scores.get("laughter", 0),
-                            "smile": frame.visual, "face_detected": image_smile is not None,
+                            "smile": frame.visual, "face_detected": self.face_detected,
+                            "face_chunk": self.face_chunk, "face_infer_ms": self.face_infer_ms,
+                            "audio_infer_ms": audio_ms, "window_end_ms": w.end_ms,
                             "face_frames": self.face_frames, "faces_seen": self.faces_seen,
+                            "fusion_window_ms": rules.window_ms, "evidence_seconds": self.detector.fusion.total,
+                            "target_seconds": rules.equivalent_hops * HOP_MS / 1000,
                             "smile_threshold": rules.smile, "laughter_threshold": rules.strong_audio,
                             "assisted_audio_threshold": rules.assisted_audio,
                             "release_ratio": rules.release_ratio, "quiet_ms": rules.quiet_ms,
@@ -137,16 +164,17 @@ class ServerSession:
     def on_idle(self) -> list[dict[str, Any]]:
         """Close open events once audio has stopped arriving (file ended, connection stalled)."""
         idle_s = self.idle_s
-        if self.tab_rules and self._camera_generation() is not None:
+        if self.tab_rules:
             idle_s = max(idle_s, self.tab_rules.quiet_ms / 1000)
-        if self.detector.open and self._last_audio is not None and self._clock() - self._last_audio >= idle_s:
-            self.windows.reset()
+        if self._last_audio is not None and self._clock() - self._last_audio >= idle_s:
+            self._reset_media()
+            self._last_audio = None
             return self._commit(self.detector.close_all())
         return []
 
     def end(self) -> list[dict[str, Any]]:
         """The PC ended the session: close what is open."""
-        self.windows.reset()
+        self._reset_media()
         return self._commit(self.detector.close_all())
 
     # ---- internals ---------------------------------------------------------------
@@ -166,15 +194,49 @@ class ServerSession:
             ack["reason"] = reason
         out = [ack]
         if status == "applied" and msg["sensor"] in ("microphone", "camera"):
-            self.smiles.clear()
-            if self.face_model is not None and msg["sensor"] == "camera":
-                self.windows.reset()
-                return out + self._commit(self.detector.close_all())
-        if status == "applied" and msg["sensor"] == "microphone" and not msg["enabled"]:
-            # R8: no new audio events from here on; open ones close with what was heard.
-            self.windows.reset()
-            out += self._commit(self.detector.close_all())
+            if self.face_model is not None or (msg["sensor"] == "microphone" and not msg["enabled"]):
+                self._reset_media()
+                out += self._commit(self.detector.close_all())
         return out
+
+    def _infer_face(self, rgb):
+        start = time.monotonic()
+        result = self.face_model(rgb)
+        return result, round((time.monotonic() - start) * 1000, 1)
+
+    def _collect_face(self, grace=0):
+        if self.pending_face is None:
+            return
+        image_ms, chunk, future = self.pending_face
+        if grace and not future.done():
+            wait([future], timeout=grace)
+        if not future.done():
+            return
+        self.pending_face = None
+        if image_ms is None:  # completed after a capture boundary
+            return
+        try:
+            score, self.face_infer_ms = future.result()
+            self.face_chunk = chunk
+        except Exception:
+            self.face_detected = None
+            return
+        self.face_frames += 1
+        self.face_detected = score is not None
+        self.faces_seen += int(self.face_detected)
+        self.smiles.append((image_ms, score))
+
+    def _reset_media(self):
+        self.windows.reset()
+        self.smiles.clear()
+        self.face_detected = None
+        self.face_infer_ms = self.face_chunk = None
+        if self.pending_face is not None:
+            _, _, future = self.pending_face
+            future.cancel()
+            self.pending_face = (None, None, future)
+        if self.detector.fusion:
+            self.detector.fusion.reset()
 
     def _apply(self, msg: dict[str, Any]) -> tuple[str, str | None]:
         """Apply a PC message to the mirror. Returns (applied|duplicate|rejected, reason)."""
@@ -198,10 +260,10 @@ class ServerSession:
                 "playback": self._playback(ev),
                 "source": {"model": self.model.name, "config": self.detector.config.name, "aec": aec},
             }
-            if self.face_model is not None and ev["generations"]["camera"] is not None and ev["reaction"]["type"] == "laughter":
+            if self.tab_rules and ev["reaction"]["type"] == "laughter":
                 rules = self.tab_rules
-                ev["source"].update(model=self.model.name + "+mediapipe-face",
-                                    config=f"tab-v2-a{rules.strong_audio:g}-a{rules.assisted_audio:g}"
+                ev["source"].update(model=self.model.name + ("+mediapipe-face" if ev["generations"]["camera"] is not None else ""),
+                                    config=f"fusion-{rules.window_ms}ms-{rules.equivalent_hops}h-a{rules.strong_audio:g}-a{rules.assisted_audio:g}"
                                            f"-s{rules.smile:g}-q{rules.quiet_ms}")
             msg = {
                 "schema": "encore.v1",

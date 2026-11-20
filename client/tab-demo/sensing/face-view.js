@@ -21,12 +21,12 @@ export class FaceView {
     this.misses = 0;
   }
 
-  draw(ctx, video) {
+  draw(ctx, video, frameNumber = this.frames + 1) {
     const [cx, cy, scale, name] = views[this.index];
     const sw = video.videoWidth * scale, sh = video.videoHeight * scale;
     ctx.drawImage(video, video.videoWidth * cx - sw / 2, video.videoHeight * cy - sh / 2,
                   sw, sh, 0, 0, ctx.canvas.width, ctx.canvas.height);
-    this.frames++;
+    this.frames = frameNumber;
     return name;
   }
 

@@ -1,5 +1,6 @@
-import {ClipBuffer, clipDirectory, savedClips} from "./clips.js?v=3";
-import {FaceView} from "./face-view.js";
+import {ClipBuffer} from "./clips/buffer.js";
+import {clipDirectory, savedClips} from "./clips/store.js";
+import {FaceView} from "./sensing/face-view.js";
 const $ = id => document.getElementById(id);
 const encoder = new TextEncoder();
 let stream, audio, socket, capture;
@@ -36,7 +37,10 @@ async function showClip(autoplay = false) {
   if (token !== selection) return;
   if (clipURL) URL.revokeObjectURL(clipURL);
   clipURL = URL.createObjectURL(file);
-  $("player").src = clipURL;
+  const m = clip.meta;
+  const start = m ? Math.max(0, (m.start_ms - m.media_start_ms) / 1000) : 0;
+  const end = m ? Math.min(m.end_ms - m.media_start_ms, m.media_end_ms - m.media_start_ms) / 1000 : 0;
+  $("player").src = m ? clipURL + "#t=" + start + "," + end : clipURL;
   $("download").href = clipURL;
   $("download").download = file.name;
   $("playback").textContent = "";
@@ -55,7 +59,7 @@ function addClip(clip, prepend) {
   files.set(clip.handle.name, clip);
   $("saved-count").textContent = "(" + files.size + ")";
   const timestamp = new Date(clip.time).toLocaleTimeString("ko-KR");
-  const option = new Option(timestamp + " · " + reactionName(clip.reaction) + " · " + clip.id, clip.handle.name);
+  const option = new Option(timestamp + " · " + reactionName(clip.reaction) + " · " + clip.id + (clip.meta?.status === "partial" ? " · 일부 구간 없음" : ""), clip.handle.name);
   if (prepend) $("clips").prepend(option);
   else $("clips").append(option);
   $("empty").hidden = true;
@@ -82,10 +86,15 @@ async function endSession() {
   if (socket) socket.onmessage = null;
   const pending = recording?.stop();
   recording = null;
+  clearEarly();
   stream?.getTracks().forEach(track => track.stop());
   socket?.close(1000);
   if (audio && audio.state !== "closed") await audio.close();
-  await pending;
+  try { await pending; } catch (err) {
+    report("임시 파일 정리 실패 · " + err.message);
+    signal("저장소 오류 · " + err.message, "error");
+  }
+  if ($("signal").dataset.state === "recording") signal("시연 종료 · 저장 전 임시 영상 삭제");
   if ($("signal").dataset.state === "waiting") signal("시연 종료 · 수신한 녹화 신호 없음");
   $("preview").srcObject = null;
   $("start").disabled = false;
@@ -113,7 +122,7 @@ $("start").onclick = async () => {
     await $("preview").play();
     audio = new AudioContext({sampleRate:16000});
     await audio.resume();
-    await audio.audioWorklet.addModule("pcm.js?v=3");
+    await audio.audioWorklet.addModule(new URL("./sensing/pcm.js", import.meta.url));
     const ws = socket = new WebSocket("ws://127.0.0.1:8765/v1/sessions/" + session + "/stream");
     await new Promise((resolve,reject) => {
       ws.onopen = resolve;
@@ -134,6 +143,7 @@ $("start").onclick = async () => {
           if ($("early").hidden) $("clip-progress").textContent = "녹화 중 · 첫 장면을 준비하고 있습니다.";
         }
         if (phase === "UPDATE") signal("● 반응 지속 · 녹화 연장 · " + label, "recording");
+        if (phase === "UNAVAILABLE") signal("저장 가능한 영상 없음 · " + label);
         if (phase === "FINAL") signal("반응 종료 · 클립 마무리 중 · " + label, "recording");
       },
       onPreview(blob, id) {
@@ -172,7 +182,7 @@ $("start").onclick = async () => {
       if (msg.kind === "demo_scores") {
         windows++;
         if (typeof msg.face_detected === "boolean") {
-          faceView.observe(msg.face_frames, msg.face_detected);
+          faceView.observe(msg.face_chunk == null ? msg.face_frames : msg.face_chunk + 1, msg.face_detected);
           const face = msg.face_detected ? "얼굴 검출" : "얼굴 미검출";
           $("faces").textContent = `최근 프레임 · ${face} (누적 ${msg.faces_seen}/${msg.face_frames}장)`;
         } else {
@@ -182,16 +192,17 @@ $("start").onclick = async () => {
         if (msg.smile != null) peakSmile = Math.max(peakSmile ?? 0, msg.smile);
         $("scores").textContent = `분석 ${windows}회 · 웃음소리 ${msg.laughter.toFixed(2)} · 미소 ${msg.smile?.toFixed(2) ?? "얼굴 점수 없음"}`;
         $("peaks").textContent = `세션 최고값 · 웃음소리 ${peakLaughter.toFixed(2)} · 미소 ${peakSmile?.toFixed(2) ?? "미검출"}`;
-        if (msg.assisted_audio_threshold != null) {
+        if (msg.target_seconds != null) {
           const hold = msg.quiet_elapsed_ms > 0
             ? ` · 웃음 잦아듦 ${(msg.quiet_elapsed_ms/1000).toFixed(1)}초` : "";
-          $("rule").textContent = `웃음 시작 · 소리 ≥ ${msg.laughter_threshold} 또는 소리 ≥ ${msg.assisted_audio_threshold} + 미소 ≥ ${msg.smile_threshold} · 종료 대기 ${msg.quiet_ms/1000}초${hold}`;
+          $("rule").textContent = `웃음 시작 · 소리 ≥ ${msg.laughter_threshold} 또는 최근 ${msg.fusion_window_ms/1000}초 소리·미소 누적 ${msg.evidence_seconds.toFixed(2)} / ${msg.target_seconds.toFixed(2)}점·초 · 추론 소리 ${msg.audio_infer_ms}ms / 얼굴 ${msg.face_infer_ms ?? "—"}ms · 종료 대기 ${msg.quiet_ms/1000}초${hold}`;
         } else {
           $("rule").textContent = "이전 서버 설정으로 연결됨 · 새 녹화 기준을 적용하려면 시연 서버를 재시작하세요.";
         }
       } else if (msg.kind === "event_update") {
         const e = msg.event;
         recording?.receive(e);
+        if (e.phase === "OPEN") report("첫 트리거 촬영 시점 → PC 수신 " + Math.round(performance.now() - e.capture.triggers_ms[0]) + "ms");
         report(`PC 수신 · ${e.phase} · ${e.event_id} · ${e.reaction.type} · 오디오 신뢰도 ${e.reaction.confidence} · 표정 강도 ${e.intensity.visual ?? "—"}`);
       } else if (msg.kind === "control_ack") report(msg.sensor + " · " + msg.status);
     };
@@ -208,7 +219,7 @@ $("start").onclick = async () => {
       const index = chunk++;
       if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > 524288) return;
       const imageMs = Math.round(epoch + audio.currentTime*1000);
-      const area = faceView.draw(ctx, $("preview"));
+      const area = faceView.draw(ctx, $("preview"), index+1);
       $("roi").hidden = false;
       $("roi-name").textContent = "서버에 보낸 화면 · " + area;
       const rgba = ctx.getImageData(0,0,320,180).data;

@@ -26,22 +26,9 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any
 
+from .fusion import RollingFusion, TabRules
+
 REACTIONS = ("laughter", "scream", "gasp")
-
-
-@dataclass(frozen=True)
-class TabRules:
-    """Laughter thresholds for the shared-tab demo, in raw model score units."""
-    strong_audio: float = 0.25
-    assisted_audio: float = 0.10
-    smile: float = 0.20
-    release_ratio: float = 0.5
-    quiet_ms: int = 3_000
-
-    def matches(self, audio: float, smile: float | None, scale: float = 1.0) -> bool:
-        return audio >= self.strong_audio * scale or (
-            smile is not None and smile >= self.smile * scale and audio >= self.assisted_audio * scale
-        )
 
 
 @dataclass
@@ -78,13 +65,14 @@ class ReactionDetector:
     def __init__(self, config: DetectorConfig | None = None, tab_rules: TabRules | None = None) -> None:
         self.config = config or DetectorConfig()
         self.tab_rules = tab_rules
+        self.fusion = RollingFusion(tab_rules) if tab_rules else None
         self.open: dict[str, _Open] = {}
         self._count = 0
 
     def push(self, frame: Frame) -> list[tuple[dict[str, Any], str]]:
         """Feed one frame. Returns the events that changed, each with its AEC status."""
         cfg = self.config
-        rules = self.tab_rules if frame.camera is not None else None
+        rules = self.tab_rules
         t = (frame.start_ms + frame.end_ms) // 2
         changes = []
         for reaction in REACTIONS:
@@ -92,8 +80,8 @@ class ReactionDetector:
             score = round(raw, 3)
             level = cfg.trigger[reaction]
             if rules and reaction == "laughter":
-                trigger = rules.matches(raw, frame.visual)
-                hold = rules.matches(raw, frame.visual, rules.release_ratio)
+                trigger = self.fusion.push(t, raw, frame.visual)
+                hold = rules.holds(raw, frame.visual)
             else:
                 trigger = score >= level
                 hold = score >= level * cfg.release_ratio
@@ -116,7 +104,7 @@ class ReactionDetector:
                     ev["revision"] += 1
                     ev["phase"] = "UPDATE"
                     changes.append((copy.deepcopy(ev), cur.aec))
-            elif frame.end_ms - cur.last_active_ms >= (rules.quiet_ms if rules else cfg.hangover_ms):
+            elif frame.end_ms - cur.last_active_ms >= (rules.quiet_ms if rules and reaction == "laughter" else cfg.hangover_ms):
                 changes.append(self._final(reaction))
         return changes
 
@@ -139,6 +127,8 @@ class ReactionDetector:
         return copy.deepcopy(ev), frame.aec
 
     def _final(self, reaction: str):
+        if self.fusion and reaction == "laughter":
+            self.fusion.reset()
         cur = self.open.pop(reaction)
         ev = cur.event
         ev["revision"] += 1
