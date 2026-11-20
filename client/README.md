@@ -82,6 +82,21 @@ cd client
 ../.venv/bin/python -m encore_client --headless --session-id ses-sample-07 --mic-wav laugh.wav --timeout 5
 ```
 
+## Live microphone without the player
+
+On machines without the Ubuntu player (for example macOS), the main window can still run a live session from the PC microphone and show the results in the normal timeline and Highlights:
+
+```sh
+cd client
+../.venv/bin/python -m encore_client --no-player --mic --local-server loudness
+# stricter loudness trigger in a noisy room
+../.venv/bin/python -m encore_client --no-player --mic --local-server loudness --trigger laughter=0.6
+# or a session server started elsewhere (for example through an SSH tunnel)
+../.venv/bin/python -m encore_client --no-player --mic --server ws://127.0.0.1:8765
+```
+
+`--local-server` starts the test bench's built-in session server (`loudness` stand-in or `yamnet`). Without a player there is no content position, so Start sends a *microphone clock* anchor (`content_id: mic-clock`): timeline times are seconds since Start, and the title says so. Nothing is echo-cancelled (`aec: off`); use headphones if anything else is playing. This is a demonstration path, not the product's capture path (R1).
+
 ## Test bench
 
 `python -m encore_client.bench` tries reaction detection without the player, a second terminal or a server account. One window starts a session server inside the app, streams audio from the PC microphone or a file, and shows the model's scores live next to the events the PC receives through the normal contract path.

@@ -27,11 +27,32 @@ def main(argv=None):
     parser.add_argument("--mic-wav", type=Path, metavar="FILE.wav",
                         help="stand-in microphone until capture exists: stream this mono 16 kHz "
                              "16-bit WAV to the server while the session's microphone is on")
+    parser.add_argument("--mic", action="store_true",
+                        help="capture the PC's default microphone (no echo cancellation; use headphones)")
+    parser.add_argument("--local-server", choices=("loudness", "yamnet"),
+                        help="start a session server inside the app with this model instead of using --server")
+    parser.add_argument("--trigger", action="append", metavar="REACTION=LEVEL",
+                        help="with --local-server: detector trigger level, e.g. laughter=0.6 (repeatable)")
     args = parser.parse_args(argv)
     if args.video and (args.no_player or args.headless):
         parser.error("video requires the graphical GStreamer player")
-    if args.no_player and not (args.demo or args.scenario):
-        parser.error("--no-player requires --demo or --scenario; a live session needs a player anchor")
+    live_input = args.mic or args.mic_wav is not None
+    if args.no_player and not (args.demo or args.scenario or live_input):
+        parser.error("--no-player requires --demo, --scenario, --mic or --mic-wav; "
+                     "a live session without a player needs a microphone")
+    if args.mic and args.mic_wav:
+        parser.error("use either --mic or --mic-wav")
+    if args.mic and args.headless:
+        parser.error("--mic needs the window (Qt Multimedia); use --mic-wav with --headless")
+    if args.local_server and (args.demo or args.scenario):
+        parser.error("--local-server is for live sessions; it cannot be combined with --demo or --scenario")
+    if args.trigger and not args.local_server:
+        parser.error("--trigger only applies to --local-server")
+    try:
+        from .live import parse_triggers
+        triggers = parse_triggers(args.trigger)
+    except ValueError as exc:
+        parser.error(str(exc))
     scenario_path = args.scenario
     if args.demo and scenario_path is None:
         scenario_path = ROOT / "contracts/samples/04_duplicate_delivery.json"
@@ -39,19 +60,38 @@ def main(argv=None):
     if scenario and args.session_id and args.session_id != scenario["session_id"]:
         parser.error("--session-id must match the selected scenario")
     server = None
+    local = None
+    qt_mic = None
     session = None
     try:
+        if args.local_server:
+            from .live import start_local_server
+            if args.local_server == "yamnet":
+                from .bench.local import preload_tensorflow
+                preload_tensorflow()  # before Qt Multimedia opens devices (see bench/local.py)
+            try:
+                local = start_local_server(args.local_server, triggers)
+            except ImportError as exc:
+                parser.exit(2, f"cannot start the {args.local_server} server: {exc}\n"
+                            "Install requirements-dev.txt (YAMNet also needs server/requirements-yamnet.txt).\n")
+            print(f"[encore] built-in session server: {local.model_name}, {local.config.name}", flush=True)
         if args.demo:
             from .session.fake_server import FakeServer
             server = FakeServer(scenario, port=0, interval_s=0.05).start()
         # A live session turns the microphone on at Start (R11), so the server's
         # events carry a microphone generation the client accepts. A scenario
         # sends its own controls instead.
-        session = Session(server.url if server else args.server,
+        url = server.url if server else (local.url if local else args.server)
+        session = Session(url,
                           scenario["session_id"] if scenario else args.session_id,
                           log=DeliveryLog(args.log),
                           microphone_on_start=scenario is None)
         driver = ScenarioDriver(session, scenario) if scenario else None
+        mic_clock = args.no_player and scenario is None
+        if mic_clock:
+            from .clock import monotonic_ms
+            from .live import send_mic_clock_on_start
+            send_mic_clock_on_start(session, monotonic_ms)
         mic = None
         if args.mic_wav:
             import wave
@@ -70,11 +110,12 @@ def main(argv=None):
         index_path = args.clip_index or (ROOT / "samples/clip_index.json" if args.demo
                                         else ROOT / "artifacts/clip_index.json")
         workspace = Workspace(session, driver, index_path,
-                              require_anchor=scenario is None, demo=scenario is not None)
+                              require_anchor=scenario is None and not mic_clock, demo=scenario is not None)
         if args.no_player:
             win = QMainWindow()
             win.setCentralWidget(workspace)
-            win.setWindowTitle("Encore Moment — contract/UI development")
+            win.setWindowTitle("Encore Moment — microphone test (no player)" if mic_clock
+                               else "Encore Moment — contract/UI development")
             win.resize(800, 900)
         else:
             try:
@@ -104,15 +145,31 @@ def main(argv=None):
             mic_timer = QTimer(win)
             mic_timer.timeout.connect(mic.pump)
             mic_timer.start(50)
+        if args.mic:
+            from .sensing.live_mic import LiveMicrophone, QtAudioInput
+            try:
+                qt_mic = QtAudioInput(LiveMicrophone(session))
+                qt_mic.start()
+            except RuntimeError as exc:
+                parser.exit(2, f"--mic: {exc}\n")
+            where = f"built-in {local.model_name} server" if local else url
+            workspace.sensing.setText(
+                "Camera: Off — capture unavailable\n"
+                f"Microphone: {qt_mic.device.description()} — live, no echo cancellation (use headphones)\n"
+                f"Analysis: {where}" + (" · times are seconds since Start" if mic_clock else ""))
         app.aboutToQuit.connect(workspace.shutdown)
         win.show()
         return app.exec()
     finally:
+        if qt_mic is not None:
+            qt_mic.stop()
         if session:
             session.end()
             session.log.close()
         if server:
             server.stop()
+        if local:
+            local.stop()
 
 
 if __name__ == "__main__":
