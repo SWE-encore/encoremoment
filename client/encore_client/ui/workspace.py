@@ -31,7 +31,8 @@ class Workspace(QWidget):
             label.setWordWrap(True)
             layout.addWidget(label)
         self.session_panel = SessionPanel(session, driver, require_anchor=require_anchor)
-        # End stops the camera first, so its off control goes out before the stream closes (R11).
+        # End stops the camera and the microphone first, so their off controls go out
+        # and the server closes open reactions before the stream closes (R11).
         self.session_panel.end_btn.clicked.disconnect()
         self.session_panel.end_btn.clicked.connect(self.end_session)
         layout.addWidget(self.session_panel, 2)
@@ -56,6 +57,8 @@ class Workspace(QWidget):
     def end_session(self):
         if self.camera is not None:
             self.camera.stop_for_session_end()
+        if self.microphone is not None:
+            self.microphone.switch.turn_off()  # closes the device, then tells the server
         self.session_panel.end()
         self.refresh()
 

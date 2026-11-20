@@ -29,6 +29,13 @@ anchor. Audio captured while disconnected is dropped, never sent late (R9).
 If a control the server had applied comes back ``applied`` again, the server
 no longer has this session (it restarted): the session stays disconnected
 with that reason instead of being shown as recovered.
+
+Ending (R11, EM-20). ``finish()`` is the user's End: a live session turns the
+microphone off first, so the server closes every open reaction and sends its
+FINAL result, and the stream is closed once every control has been
+acknowledged and no event is still open, or after ``END_GRACE_MS``. A
+reaction in progress at End is then complete on the PC (and in Highlights)
+instead of staying open. ``end()`` closes at once, for shutdown.
 """
 
 from __future__ import annotations
@@ -67,11 +74,13 @@ class Conn(str, Enum):
     CONNECTED = "connected"
     DISCONNECTED = "disconnected"  # dropped or never reached; results may be stale
     RECONNECTING = "reconnecting"  # dropped, opening the stream again (R11); results may be stale
+    ENDING = "ending"  # End pressed: waiting for the server to close open reactions (R11)
     ENDED = "ended"  # user pressed End
 
 
 STARTED = (Conn.CONNECTING, Conn.CONNECTED, Conn.DISCONNECTED, Conn.RECONNECTING)  # Start pressed, End not
 RECONNECT_DELAYS_MS = (1_000, 2_000, 5_000, 10_000)  # the last one repeats until End
+END_GRACE_MS = 3_000  # End waits at most this long for the server's acks and FINAL results
 LOST_SESSION = "the server no longer has this session (it may have restarted); results after the drop are lost"
 
 
@@ -255,6 +264,8 @@ class Session:
         self.retry_at_ms: int | None = None  # when the next attempt starts
         self.lost = False  # the server lost the session: no more attempts
         self._server_had: set[str] = set()  # controls the server had acknowledged when this connection opened
+        self.end_settled: bool | None = None  # End: True if everything was confirmed, False if it timed out
+        self._end_by_ms: int | None = None
         self.log = log or DeliveryLog(None, clock)
         self._seq = 0
         self._audio_generation: int | None = None
@@ -291,7 +302,43 @@ class Session:
         self._transport = self._factory(f"{self.url}?after={after}")
         self._transport.start()
 
+    def finish(self, grace_ms: int = END_GRACE_MS) -> None:
+        """End pressed: close the stream once the server has closed what is open (R11).
+
+        A live session (``microphone_on_start``) turns the microphone off, so
+        the server finalizes every open reaction and sends the FINAL results.
+        The stream closes when every control has been acknowledged and no
+        event is still open, or after ``grace_ms``; ``poll()`` does this.
+        Without a connection, or for a scenario run, this is ``end()``.
+        """
+        if self.state is not Conn.CONNECTED or not self.microphone_on_start:
+            self.end()
+            return
+        self.set_sensor("microphone", False)  # None if it is already off
+        self._end_by_ms = self._clock() + grace_ms
+        self.log.write("ending", open_events=self.open_events, unacked=self.unacked_controls)
+        self._set_state(Conn.ENDING)
+        self._end_when_settled()
+
+    @property
+    def open_events(self) -> list[str]:
+        """Events the PC has that are not FINAL yet."""
+        return sorted(e["event_id"] for e in self.view.events.values() if e["phase"] != "FINAL")
+
+    @property
+    def unacked_controls(self) -> list[str]:
+        return [m["idempotency_key"] for m in self.controls if m["idempotency_key"] not in self.acks]
+
+    def _end_when_settled(self, stream_closed: bool = False) -> None:
+        settled = not self.open_events and not self.unacked_controls
+        if settled or stream_closed or self._clock() >= self._end_by_ms:
+            self.end_settled = settled
+            self.log.write("end_wait", settled=settled, open_events=self.open_events,
+                           unacked=self.unacked_controls)
+            self.end()
+
     def end(self) -> None:
+        """Close the stream now. For the user's End, use ``finish()``."""
         if self.state in (Conn.IDLE, Conn.ENDED):
             return
         self.retry_at_ms = None
@@ -483,7 +530,9 @@ class Session:
                     break  # the transport is closed; what is left of it is not read
             elif what == "closed":
                 self.log.write("closed", reason=data)
-                if self.state is not Conn.ENDED:
+                if self.state is Conn.ENDING:
+                    self._end_when_settled(stream_closed=True)  # nothing more will arrive
+                elif self.state is not Conn.ENDED:
                     self.reason = data
                     self._set_state(Conn.DISCONNECTED)
                     self._schedule_retry()
@@ -491,6 +540,9 @@ class Session:
                 and self._clock() >= self.retry_at_ms):
             self.reconnect()
             changed = True
+        if self.state is Conn.ENDING:
+            self._end_when_settled()
+            changed = changed or self.state is Conn.ENDED
         return changed
 
     def _on_open(self) -> None:
