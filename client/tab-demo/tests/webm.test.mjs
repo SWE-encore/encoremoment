@@ -5,7 +5,7 @@ import {mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import test from "node:test";
-import {assemble, downloadableWebm} from "../clips/webm.js";
+import {assembleClips, downloadableWebm} from "../clips/webm.js";
 
 const hasGst = spawnSync("gst-launch-1.0", ["--version"]).status === 0;
 function gst(pipeline) {
@@ -13,28 +13,41 @@ function gst(pipeline) {
   assert.equal(proc.status, 0, proc.stderr);
 }
 
-test("VP8/Opus from two independently encoded segments decodes across the join", {skip:!hasGst}, async () => {
+async function capturePart(dir, i, width, audioFirst = false) {
+  const path = join(dir, "input-" + i + ".webm");
+  const video = ["videotestsrc","pattern=ball","num-buffers=12","!",
+    "video/x-raw,framerate=12/1,width="+width+",height=64","!","vp8enc","deadline=1","!","queue","!","mux."];
+  const sound = ["audiotestsrc","num-buffers=50","samplesperbuffer=960","!","audio/x-raw,rate=48000",
+    "!","opusenc","!","queue","!","mux."];
+  gst(["webmmux","name=mux","streamable=true","!","filesink","location="+path,
+    ...(audioFirst ? sound.concat(video) : video.concat(sound))]);
+  return {start:i*1000, end:(i+1)*1000, file:new Blob([await readFile(path)])};
+}
+
+async function verifyDecoded(dir, clip, width, seconds) {
+  const result = join(dir,"clip.webm"), pixels = join(dir,"video.rgba"), sound = join(dir,"mono.s16");
+  await writeFile(result, new Uint8Array(await clip.blob.arrayBuffer()));
+  gst(["filesrc","location="+result,"!","matroskademux","name=d",
+    "d.video_0","!","queue","!","vp8dec","!","videoconvert","!","video/x-raw,format=RGBA",
+    "!","filesink","location="+pixels,
+    "d.audio_0","!","queue","!","opusdec","!","audio/x-raw,format=S16LE,channels=1",
+    "!","filesink","location="+sound]);
+  assert.equal((await stat(pixels)).size, seconds*12*width*64*4);
+  assert.ok(Math.abs((await stat(sound)).size / 2 - seconds*48000) < 960);
+}
+
+test("VP8 and Opus decode across recorder track renumbering and every resolution boundary", {skip:!hasGst}, async () => {
   const dir = await mkdtemp(join(tmpdir(), "encore-webm-"));
   try {
-    const parts = [];
-    for (const [i, pattern] of ["ball","black"].entries()) {
-      const path = join(dir, pattern+".webm");
-      gst(["webmmux","name=mux","streamable=true","!","filesink","location="+path,
-        "videotestsrc","pattern="+pattern,"num-buffers=12","!","video/x-raw,framerate=12/1,width=96,height=64",
-        "!","vp8enc","deadline=1","!","queue","!","mux.",
-        "audiotestsrc","num-buffers=50","samplesperbuffer=960","!","audio/x-raw,rate=48000",
-        "!","opusenc","!","queue","!","mux."]);
-      parts.push({start:i*1000,end:(i+1)*1000,file:new Blob([await readFile(path)])});
-    }
-    const result = join(dir,"clip.webm"), pixels = join(dir,"video.rgba"), sound = join(dir,"mono.s16");
-    await writeFile(result, new Uint8Array(await (await assemble(parts)).arrayBuffer()));
-    gst(["filesrc","location="+result,"!","matroskademux","name=d",
-      "d.video_0","!","queue","!","vp8dec","!","videoconvert","!","video/x-raw,format=RGBA",
-      "!","filesink","location="+pixels,
-      "d.audio_0","!","queue","!","opusdec","!","audio/x-raw,format=S16LE,channels=1",
-      "!","filesink","location="+sound]);
-    assert.equal((await stat(pixels)).size, 24*96*64*4);
-    assert.ok(Math.abs((await stat(sound)).size / 2 - 96000) < 960);
+    const parts = [
+      await capturePart(dir, 0, 96), await capturePart(dir, 1, 96, true),
+      await capturePart(dir, 2, 128), await capturePart(dir, 3, 128), await capturePart(dir, 4, 96)
+    ];
+    const clips = await assembleClips(parts);
+    assert.deepEqual(clips.map(c => [c.start, c.end]), [[0,2000], [2000,4000], [4000,5000]]);
+    await verifyDecoded(dir, clips[0], 96, 2);
+    await verifyDecoded(dir, clips[1], 128, 2);
+    await verifyDecoded(dir, clips[2], 96, 1);
   } finally {
     await rm(dir, {recursive:true,force:true});
   }

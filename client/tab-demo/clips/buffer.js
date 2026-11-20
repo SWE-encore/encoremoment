@@ -1,4 +1,4 @@
-import {assemble} from "./webm.js";
+import {assembleClips} from "./webm.js";
 import {ClipPlan, SEGMENT_MS, HANDLE_MS, RETENTION_MS, overlaps, missing} from "./plan.js";
 
 async function verifyPlayback(blob) {
@@ -19,6 +19,17 @@ async function verifyPlayback(blob) {
     video.removeAttribute("src");
     video.load();
     URL.revokeObjectURL(url);
+  }
+}
+
+async function writeFile(handle, data) {
+  const writer = await handle.createWritable();
+  try {
+    await writer.write(data);
+    await writer.close();
+  } catch (err) {
+    await writer.abort().catch(() => {});
+    throw err;
   }
 }
 
@@ -164,40 +175,44 @@ export class ClipBuffer {
     const inputs = [];
     for (const s of available) inputs.push({...s, file:await s.handle.getFile()});
     if (this.closed) return;
-    const blob = await assemble(inputs);
-    if (this.closed) return;
-    await verifyPlayback(blob);
-    if (this.closed) return;
-    const id = part.index === 1 ? plan.id : plan.id + "-part-" + part.index;
+    const clips = await assembleClips(inputs);
     const time = Date.now();
-    const filename = [time, id, plan.reaction, crypto.randomUUID()].join("_") + ".webm";
-    const meta = {event_id:plan.id, part:part.index, camera_generation:this.generation,
-      status:gaps.length ? "partial" : "ready", gaps, start_ms:part.start, end_ms:part.end,
-      media_start_ms:available[0].start, media_end_ms:available.at(-1).end};
-    const staging = "export-" + crypto.randomUUID();
+    const baseId = part.index === 1 ? plan.id : plan.id + "-part-" + part.index;
+    const staged = [];
     let committed = false;
     try {
-      const handle = await this.dir.getFileHandle(staging, {create:true});
-      const writer = await handle.createWritable();
-      await writer.write(blob);
-      await writer.close();
-      if (this.closed) return;
-      const sidecar = await this.dir.getFileHandle(filename+".json", {create:true});
-      const index = await sidecar.createWritable();
-      await index.write(JSON.stringify(meta));
-      await index.close();
-      if (this.closed) return;
-      await handle.move(filename);
+      for (const [i, clip] of clips.entries()) {
+        if (this.closed) return;
+        await verifyPlayback(clip.blob);
+        if (this.closed) return;
+        const id = clips.length === 1 ? baseId : baseId + "-file-" + (i+1) + "-of-" + clips.length;
+        const filename = [time, id, plan.reaction, crypto.randomUUID()].join("_") + ".webm";
+        const meta = {event_id:plan.id, part:part.index, camera_generation:this.generation,
+          status:gaps.length ? "partial" : "ready", gaps, start_ms:part.start, end_ms:part.end,
+          media_start_ms:clip.start, media_end_ms:clip.end, file_index:i+1, file_count:clips.length};
+        const staging = "export-" + crypto.randomUUID();
+        const item = {id, time, reaction:plan.reaction, meta, filename, staging};
+        staged.push(item);
+        item.handle = await this.dir.getFileHandle(staging, {create:true});
+        await writeFile(item.handle, clip.blob);
+        const sidecar = await this.dir.getFileHandle(filename+".json", {create:true});
+        await writeFile(sidecar, JSON.stringify(meta));
+      }
+      for (const item of staged) {
+        if (this.closed) return;
+        await item.handle.move(item.filename);
+      }
       if (this.closed) return;
       committed = true;
-      // The OPFS move is the publication boundary. The UI can now open the file.
       part.saved = true;
-      await this.onSaved({handle, time, id, reaction:plan.reaction, meta});
     } finally {
-      if (!committed) for (const name of [staging, filename, filename+".json"]) {
-        try { await this.dir.removeEntry(name); } catch (err) { if (err.name !== "NotFoundError") throw err; }
+      if (!committed) for (const item of staged) {
+        for (const name of [item.staging, item.filename, item.filename+".json"]) {
+          try { await this.dir.removeEntry(name); } catch (err) { if (err.name !== "NotFoundError") throw err; }
+        }
       }
     }
+    for (const item of staged) await this.onSaved(item);
   }
 
   async stop() {
