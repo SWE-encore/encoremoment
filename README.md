@@ -6,6 +6,38 @@ This repository brings controlled video playback, audience reaction event delive
 The native desktop demo uses contract fixtures for clip review. The Chrome tab demo sends shared audio and video frames to the session server and saves triggered clips locally. [Run the tab demo](client/tab-demo/README.md).
 Submission B defines the current PC-first design; Submission A preserves the earlier smart-TV scope.
 
+## System architecture
+
+```mermaid
+flowchart TB
+    subgraph PC["User's PC"]
+        tab["Chrome · shared tab"]
+        buffer["Browser recording buffer"]
+        clips["Local WebM clips"]
+        desktop["Desktop app · PySide6 / GStreamer"]
+        tab -->|Record in 5-second segments| buffer
+        buffer -->|Save event window| clips
+    end
+    subgraph EC2["EC2 · session server"]
+        session["WebSocket session"]
+        audio["YAMNet · sound"]
+        face["MediaPipe · facial expression"]
+        fusion["Reaction detection"]
+        session -->|PCM audio| audio
+        session -->|Sampled frames| face
+        audio --> fusion
+        face --> fusion
+    end
+    tab -->|Audio and frames over SSH tunnel| session
+    desktop <-->|Playback anchors and events| session
+    fusion -->|OPEN / UPDATE / FINAL over WebSocket| buffer
+    fusion -.->|FINAL metadata only| history["EM-29 · optional PostgreSQL on RDS"]
+```
+
+The browser keeps recent footage on the PC. When the server detects a reaction, the browser uses the event timestamps to save the matching footage as a WebM in local browser storage (OPFS). The desktop app uses the same session protocol for its playback timeline and highlights.
+
+The dotted path shows the optional event-history feature developed in EM-29. It stores event records such as the reaction type and timing. [Desktop architecture](docs/architecture.md) · [EM-29 pull request](https://github.com/SWE-encore/encoremoment/pull/15)
+
 ## Quick start
 
 Run commands from the repository root unless noted otherwise. The full player targets **Ubuntu 24.04 / Python 3.12 / PySide6 6.8.3 / GStreamer 1.24**.
