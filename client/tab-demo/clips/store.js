@@ -18,5 +18,5 @@ export async function savedClips(dir) {
       result.push({handle, meta, time: Number(match[1]), id: match[2], reaction: match[3]});
     }
   }
-  return result.sort((a, b) => b.time - a.time);
+  return result.sort((a, b) => b.time - a.time || (a.meta?.file_index ?? 1) - (b.meta?.file_index ?? 1));
 }
