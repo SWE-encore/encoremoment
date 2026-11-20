@@ -62,11 +62,52 @@ function element(id, ...parts) {
   return new Blob([uint(id), uint(2 ** (7 * size) + payload.size), payload]);
 }
 
-function signature(tracks) {
-  // TrackUID and stream-specific labels may change across recorder instances.
-  const config = new Set([0xd7,0x83,0x86,0x63a2,0x56aa,0x56bb,0xe0,0xe1]);
-  return JSON.stringify([...elements(tracks)].filter(el => el.id === 0xae).map(entry =>
-    [...elements(entry.data)].filter(el => config.has(el.id)).map(el => [el.id, ...el.data])));
+const TRACK_ENTRY = 0xae, TRACK_NUMBER = 0xd7, VIDEO = 0xe0, AUDIO = 0xe1;
+const TRACK_CONFIG = new Set([0x83, 0x86, 0x63a2, 0x56aa, 0x56bb, VIDEO, AUDIO]);
+const byId = (a, b) => a.id - b.id;
+
+function trackLayout(tracks) {
+  return [...elements(tracks)].filter(el => el.id === TRACK_ENTRY).map(entry => {
+    const fields = [...elements(entry.data)];
+    const track = fields.find(el => el.id === TRACK_NUMBER);
+    if (!track) throw Error("Missing WebM track number");
+    // Ignore recorder-specific UIDs, labels and the order of EBML fields.
+    const config = fields.filter(el => TRACK_CONFIG.has(el.id)).sort(byId).map(el => [
+      el.id, el.id === VIDEO || el.id === AUDIO
+        ? [...elements(el.data)].sort(byId).map(field => [field.id, ...field.data])
+        : [...el.data]
+    ]);
+    return {number:number(track.data), config:JSON.stringify(config)};
+  });
+}
+
+function matchTracks(layout, output) {
+  if (layout.length !== output.length) return null;
+  const unused = new Set(output);
+  const changes = new Map();
+  for (const track of layout) {
+    const matches = [...unused].filter(old => old.config === track.config);
+    const match = matches.find(old => old.number === track.number) ||
+      (matches.length === 1 && matches[0]);
+    if (!match) return null;
+    unused.delete(match);
+    if (track.number !== match.number) changes.set(track.number, match.number);
+  }
+  return changes;
+}
+
+function remapSample(sample, changes) {
+  if (!changes.size) return sample.raw;
+  if (sample.id === 0xa0) { // BlockGroup
+    const fields = [...elements(sample.data)].filter(el => el.id !== 0xbf);
+    return element(sample.id, ...fields.map(el => el.id === 0xa1 ? remapSample(el, changes) : el.raw));
+  }
+  const track = vint(sample.data, 0);
+  const target = changes.get(track.value);
+  if (target === undefined) return sample.raw;
+  let width = 1;
+  while (target >= 2 ** (7 * width) - 1) width++;
+  return element(sample.id, uint(2 ** (7 * width) + target), sample.data.subarray(track.size));
 }
 
 // Chromium can flag an opaque VP8/VP9 track as having alpha. Some desktop
@@ -130,9 +171,19 @@ export async function downloadableWebm(file) {
   return new Blob([...parts, file.slice(pos)], {type:"video/webm"});
 }
 
-export async function assemble(parts) {
-  let firstHeader, firstInfo, firstTracks, expected, scale;
-  const clusters = [];
+function finishClip(group) {
+  const duration = new DataView(new ArrayBuffer(8));
+  duration.setFloat64(0, (group.end - group.start) * 1000000 / group.scale);
+  const info = element(INFO, ...group.info, element(0x4489, duration.buffer));
+  const segment = element(SEGMENT, info, group.tracks, ...group.clusters);
+  return {start:group.start, end:group.end, blob:new Blob([group.head, segment], {type:"video/webm"})};
+}
+
+// One playable file per contiguous compatible layout. Each independent recorder
+// starts with its own header and keyframe, so a split needs no re-encoding.
+export async function assembleClips(parts) {
+  const clips = [];
+  let group;
   for (const part of parts) {
     const data = new Uint8Array(await part.file.arrayBuffer());
     const top = [...elements(data)];
@@ -144,12 +195,16 @@ export async function assemble(parts) {
     const tracks = children.find(el => el.id === TRACKS);
     if (!info || !tracks) throw Error("WebM segment has no track information");
     const fields = [...elements(info.data)];
-    const units = number(fields.find(el => el.id === SCALE)?.data || []) || 1000000;
-    const config = signature(tracks.data);
-    if (!firstHeader) {
-      firstHeader = head.raw; firstTracks = tracks.raw; expected = config; scale = units;
-      firstInfo = fields.filter(el => el.id !== 0x4489 && el.id !== 0xbf).map(el => el.raw);
-    } else if (config !== expected || scale !== units) throw Error("The recording format changed. The segments cannot be saved as a single clip.");
+    const scale = number(fields.find(el => el.id === SCALE)?.data || []) || 1000000;
+    const layout = trackLayout(tracks.data);
+    let changes = group?.scale === scale ? matchTracks(layout, group.layout) : null;
+    if (!changes) {
+      if (group) clips.push(finishClip(group));
+      group = {start:part.start, scale, layout, head:head.raw, tracks:tracks.raw, clusters:[],
+        info:fields.filter(el => el.id !== 0x4489 && el.id !== 0xbf).map(el => el.raw)};
+      changes = new Map();
+    }
+    group.end = part.end;
     const blocks = children.filter(el => el.id === CLUSTER);
     if (!blocks.length) throw Error("WebM segment has no media data");
     let firstTime;
@@ -159,13 +214,11 @@ export async function assemble(parts) {
       if (!stamp) throw Error("Missing WebM timecode");
       const local = number(stamp.data);
       firstTime ??= local;
-      const time = Math.round((part.start - parts[0].start) * 1000000 / scale) + local - firstTime;
-      const samples = fields.filter(el => [0xa3,0xa0].includes(el.id)).map(el => el.raw);
-      clusters.push(element(CLUSTER, element(TIMECODE, uint(time)), ...samples));
+      const time = Math.round((part.start - group.start) * 1000000 / scale) + local - firstTime;
+      const samples = fields.filter(el => el.id === 0xa3 || el.id === 0xa0).map(el => remapSample(el, changes));
+      group.clusters.push(element(CLUSTER, element(TIMECODE, uint(time)), ...samples));
     }
   }
-  const duration = new DataView(new ArrayBuffer(8));
-  duration.setFloat64(0, (parts.at(-1).end - parts[0].start) * 1000000 / scale);
-  const info = element(INFO, ...firstInfo, element(0x4489, duration.buffer));
-  return new Blob([firstHeader, element(SEGMENT, info, firstTracks, ...clusters)], {type:"video/webm"});
+  if (group) clips.push(finishClip(group));
+  return clips;
 }

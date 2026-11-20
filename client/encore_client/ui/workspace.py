@@ -17,6 +17,7 @@ class Workspace(QWidget):
         super().__init__()
         self.setMinimumWidth(540)
         self.session = session
+        self.microphone = None
         layout = QVBoxLayout(self)
         # Camera (R5, R6): real state from the media layer's device, or "unavailable".
         self.camera = (CameraControl(camera_device, session, lambda: session.state in ACTIVE)
@@ -45,16 +46,25 @@ class Workspace(QWidget):
         self.timer.timeout.connect(self.refresh)
         self.timer.start(100)
 
+    def add_microphone(self, switch):
+        """Show the microphone on/off control under the sensing line (R8)."""
+        from .microphone import MicrophoneControl
+        self.microphone = MicrophoneControl(switch)
+        layout = self.layout()
+        layout.insertWidget(layout.indexOf(self.sensing) + 1, self.microphone)
+
     def end_session(self):
         if self.camera is not None:
             self.camera.stop_for_session_end()
         self.session_panel.end()
-        self.camera_panel.refresh()
+        self.refresh()
 
     def refresh(self):
         if self.camera is not None and self.session.state not in ACTIVE:
             self.camera.stop_for_session_end()   # the session ended or dropped out of Start
         self.camera_panel.refresh()
+        if self.microphone is not None:
+            self.microphone.refresh()
         rows = [row for row in event_rows(self.session.view) if row["phase"] == "FINAL"]
         rows.sort(key=lambda row: (-(row["intensity"] if row["intensity"] is not None else -1),
                                    row["trigger_ms"], row["event_id"]))
