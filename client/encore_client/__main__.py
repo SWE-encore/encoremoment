@@ -139,24 +139,26 @@ def main(argv=None):
                 win.open_file(args.video, args.title)
                 if args.autoplay:
                     win.player.play()
+        from .sensing.microphone import MicrophoneSwitch
         if mic is not None:
             workspace.sensing.setText("Camera: Off — capture unavailable\n"
                                       f"Microphone: stand-in file {args.mic_wav.name} — no real capture")
+            workspace.add_microphone(MicrophoneSwitch(session, None, source=f"file {args.mic_wav.name}"))
             mic_timer = QTimer(win)
             mic_timer.timeout.connect(mic.pump)
             mic_timer.start(50)
         if args.mic:
             from .sensing.live_mic import LiveMicrophone, QtAudioInput
             try:
-                qt_mic = QtAudioInput(LiveMicrophone(session))
-                qt_mic.start()
+                qt_mic = QtAudioInput(LiveMicrophone(session))  # opened by the switch (R8)
             except RuntimeError as exc:
                 parser.exit(2, f"--mic: {exc}\n")
             where = f"built-in {local.model_name} server" if local else url
             workspace.sensing.setText(
                 "Camera: Off — capture unavailable\n"
-                f"Microphone: {qt_mic.device.description()} — live, no echo cancellation (use headphones)\n"
+                "No echo cancellation (aec: off): use headphones if anything else is playing\n"
                 f"Analysis: {where}" + (" · times are seconds since Start" if mic_clock else ""))
+            workspace.add_microphone(MicrophoneSwitch(session, qt_mic, source=qt_mic.device.description()))
         app.aboutToQuit.connect(workspace.shutdown)
         win.show()
         return app.exec()

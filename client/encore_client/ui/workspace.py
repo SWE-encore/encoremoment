@@ -12,6 +12,7 @@ class Workspace(QWidget):
         super().__init__()
         self.setMinimumWidth(540)
         self.session = session
+        self.microphone = None
         layout = QVBoxLayout(self)
         self.sensing = QLabel("Camera: Off — capture unavailable\nMicrophone: Off — capture unavailable")
         layout.addWidget(self.sensing)
@@ -32,7 +33,15 @@ class Workspace(QWidget):
         self.timer.timeout.connect(self.refresh)
         self.timer.start(100)
 
+    def add_microphone(self, switch):
+        """Show the microphone on/off control under the sensing line (R8)."""
+        from .microphone import MicrophoneControl
+        self.microphone = MicrophoneControl(switch)
+        self.layout().insertWidget(1, self.microphone)
+
     def refresh(self):
+        if self.microphone is not None:
+            self.microphone.refresh()
         rows = [row for row in event_rows(self.session.view) if row["phase"] == "FINAL"]
         rows.sort(key=lambda row: (-(row["intensity"] if row["intensity"] is not None else -1),
                                    row["trigger_ms"], row["event_id"]))
