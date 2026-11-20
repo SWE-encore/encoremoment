@@ -5,7 +5,7 @@ import {mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import test from "node:test";
-import {assemble} from "../clips/webm.js";
+import {assemble, downloadableWebm} from "../clips/webm.js";
 
 const hasGst = spawnSync("gst-launch-1.0", ["--version"]).status === 0;
 function gst(pipeline) {
@@ -38,4 +38,38 @@ test("VP8/Opus from two independently encoded segments decodes across the join",
   } finally {
     await rm(dir, {recursive:true,force:true});
   }
+});
+
+function chromiumAlphaSample(withAdditional) {
+  // Structural fixture only. No captured audio or video.
+  const element = (id, ...fields) => {
+    const body = Buffer.concat(fields);
+    return Buffer.concat([Buffer.from(id, "hex"), Buffer.from([0x80 + body.length]), body]);
+  };
+  const track = element("ae", element("d7", Buffer.from([1])), element("86", Buffer.from("V_VP8")),
+    element("e0", element("53c0", Buffer.from([1]))));
+  const block = Buffer.from([0x81,0,0,0x80,0]);
+  const sample = withAdditional
+    ? element("a0", element("a1", block), element("75a1", element("a6", element("a5", Buffer.from([1])))))
+    : element("a3", block);
+  return new Blob([element("18538067", element("1654ae6b", track), element("1f43b675", sample))],
+    {type:"video/webm"});
+}
+
+test("opaque Chromium download changes only the unsupported alpha declaration", async () => {
+  const input = chromiumAlphaSample(false);
+  const original = Buffer.from(await input.arrayBuffer());
+  const expected = Buffer.from(original);
+  const flag = expected.indexOf(Buffer.from("53c08101", "hex"));
+  assert.ok(flag >= 0);
+  expected[flag+3] = 0;
+  const download = await downloadableWebm(input);
+  assert.deepEqual(Buffer.from(await download.arrayBuffer()), expected);
+  assert.deepEqual(Buffer.from(await input.arrayBuffer()), original);
+  assert.equal(await downloadableWebm(download), download);
+});
+
+test("download preserves the original track when a block carries additional data", async () => {
+  const input = chromiumAlphaSample(true);
+  assert.equal(await downloadableWebm(input), input);
 });

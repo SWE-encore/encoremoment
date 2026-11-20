@@ -69,6 +69,67 @@ function signature(tracks) {
     [...elements(entry.data)].filter(el => config.has(el.id)).map(el => [el.id, ...el.data])));
 }
 
+// Chromium can flag an opaque VP8/VP9 track as having alpha. Some desktop
+// decoders then wait for a BlockAdditional plane that never arrives. Clear
+// only the flag payload, so cue positions, timestamps and codecs stay intact.
+function unusedAlphaFlags(bytes) {
+  const segment = [...elements(bytes)].find(el => el.id === SEGMENT);
+  if (!segment) return [];
+  const children = [...elements(segment.data)];
+  const tracks = children.find(el => el.id === TRACKS);
+  if (!tracks) return [];
+  const entries = [...elements(tracks.data)];
+  const hasChecksum = fields => fields.some(el => el.id === 0xbf);
+  if (hasChecksum(children) || hasChecksum(entries)) return [];
+
+  const flags = new Map();
+  for (const entry of entries.filter(el => el.id === 0xae)) {
+    const fields = [...elements(entry.data)];
+    const video = fields.find(el => el.id === 0xe0);
+    if (!video || hasChecksum(fields)) continue;
+    const codec = fields.find(el => el.id === 0x86);
+    if (!codec || !["V_VP8", "V_VP9"].includes(new TextDecoder().decode(codec.data))) continue;
+    const settings = [...elements(video.data)];
+    const flag = settings.find(el => el.id === 0x53c0);
+    const track = fields.find(el => el.id === 0xd7);
+    if (flag && track && number(flag.data) === 1 && !hasChecksum(settings)) {
+      flags.set(number(track.data), flag.data);
+    }
+  }
+  if (!flags.size) return [];
+
+  for (const cluster of children.filter(el => el.id === CLUSTER)) {
+    for (const el of elements(cluster.data)) {
+      if (el.id !== 0xa0) continue; // SimpleBlock cannot carry an auxiliary plane.
+      const group = [...elements(el.data)];
+      if (!group.some(field => field.id === 0x75a1)) continue;
+      const block = group.find(field => field.id === 0xa1);
+      if (!block) return []; // ambiguous group; retain the original headers
+      flags.delete(vint(block.data, 0).value);
+    }
+  }
+  return [...flags.values()];
+}
+
+export async function downloadableWebm(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let flags;
+  try {
+    flags = unusedAlphaFlags(bytes);
+  } catch {
+    // Old or unfamiliar containers remain available as originally recorded.
+    return file;
+  }
+  if (!flags.length) return file;
+  const parts = [];
+  let pos = 0;
+  for (const flag of flags) {
+    parts.push(file.slice(pos, flag.byteOffset), new Uint8Array(flag.byteLength));
+    pos = flag.byteOffset + flag.byteLength;
+  }
+  return new Blob([...parts, file.slice(pos)], {type:"video/webm"});
+}
+
 export async function assemble(parts) {
   let firstHeader, firstInfo, firstTracks, expected, scale;
   const clusters = [];

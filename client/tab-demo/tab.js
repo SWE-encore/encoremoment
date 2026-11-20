@@ -1,5 +1,6 @@
 import {ClipBuffer} from "./clips/buffer.js";
 import {clipDirectory, savedClips} from "./clips/store.js";
+import {downloadableWebm} from "./clips/webm.js";
 import {FaceView} from "./sensing/face-view.js";
 const $ = id => document.getElementById(id);
 const encoder = new TextEncoder();
@@ -33,10 +34,12 @@ async function showClip(autoplay = false) {
   const token = ++selection;
   const clip = files.get($("clips").value);
   if (!clip) return;
+  $("download").removeAttribute("href");
   const file = await clip.handle.getFile();
+  const media = await downloadableWebm(file);
   if (token !== selection) return;
   if (clipURL) URL.revokeObjectURL(clipURL);
-  clipURL = URL.createObjectURL(file);
+  clipURL = URL.createObjectURL(media);
   const m = clip.meta;
   const start = m ? Math.max(0, (m.start_ms - m.media_start_ms) / 1000) : 0;
   const end = m ? Math.min(m.end_ms - m.media_start_ms, m.media_end_ms - m.media_start_ms) / 1000 : 0;
