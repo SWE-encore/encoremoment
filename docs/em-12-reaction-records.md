@@ -23,7 +23,9 @@ Jira: [EM-12](https://hanyang-team-ldzgset2.atlassian.net/browse/EM-12) · Contr
 | Another title | same, title stays "Film A" | `null` (another epoch) |
 | Late reception: another title and a seek before the PC reads the result | same, the PC's row shows "Film A" | 60 000 + (end − 9 500) |
 
-Each case also checks that the server's mapping equals what the PC's own anchor history says the player was showing at the event's start and end. Two deliberate faults in the server's mapping were each caught before this was merged: using the newest anchor instead of the one in effect at capture time (5 of 6 cases fail), and ignoring the playback rate (the 2× case fails).
+Each case also checks that the server's mapping equals what the PC's own anchor history says the player was showing at the event's start and end. Two deliberate faults in the server's mapping were each caught before this was merged: using the newest anchor instead of the one in effect at capture time (the pause, 2×, seek and another-title cases fail), and ignoring the playback rate (the 2× case fails).
+
+The late-reception case guards the PC side. The server finalizes the event during the trailing silence, before the later anchors arrive, and does not remap it afterwards. The test waits until the server has all three anchors and only then lets the PC read the result, whose row must still show "Film A" at the capture timecode rather than the player's current title and position.
 
 Run:
 

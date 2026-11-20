@@ -128,6 +128,12 @@ def final_event(session):
     return event
 
 
+def server_anchors(app, sid):
+    """The anchors the server has applied so far (read from the test thread)."""
+    session = app.sessions.get(sid)
+    return list(session.view.anchors) if session else []
+
+
 def pc_view(tracker, capture):
     """What the PC's own anchors say about the event's capture interval."""
     start, end = capture["start_ms"], capture["end_ms"]
@@ -169,11 +175,16 @@ def test_a_result_read_late_keeps_the_title_and_timecode_of_its_capture(server, 
     tracker.report(5_000, 1.0, True, capture_ms=18_500)
     tracker.seeked()
     tracker.report(90_000, 1.0, True, capture_ms=19_000)
+    # The server has the later anchors before the PC reads anything. (The event was
+    # finalized during the trailing silence, before they arrived: results are not remapped.)
+    deadline = time.monotonic() + 5.0
+    while len(server_anchors(app, "ses-r3-late")) < 3:
+        assert time.monotonic() < deadline, f"server anchors: {server_anchors(app, 'ses-r3-late')}"
+        time.sleep(0.01)
+    assert [a["title"] for a in server_anchors(app, "ses-r3-late")] == ["Film A", "Film B", "Film B"]
     event = final_event(session)
     session.end()
 
-    anchors = app.sessions["ses-r3-late"].view.anchors
-    assert [a["title"] for a in anchors] == ["Film A", "Film B", "Film B"]  # the server has all three
     (row,) = event_rows(session.view)
     assert row["title"] == "Film A"
     assert row["timecode_ms"] == ANCHOR_POS + event["capture"]["start_ms"] - ANCHOR_MS
