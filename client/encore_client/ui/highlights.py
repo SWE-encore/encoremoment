@@ -28,10 +28,11 @@ def _fmt(value: float | None) -> str:
 class HighlightsPanel(QWidget):
     play_requested = Signal(object)   # Path of a checked clip file
 
-    def __init__(self, session, index_path: Path, parent=None) -> None:
+    def __init__(self, session, index_path: Path, parent=None, *, deletions=None) -> None:
         super().__init__(parent)
         self.session = session
         self.index_path = index_path
+        self.deletions = deletions   # tombstones hide deleted clips at once (R7)
         self.items: list[Highlight] = []
         self._index_stamp = None
         self._index_clips = []
@@ -60,16 +61,22 @@ class HighlightsPanel(QWidget):
     # ---- data ---------------------------------------------------------------------
 
     def _clips(self):
-        """The clip index, reread when the file changes (a pending clip finishing)."""
+        """The clip index, reread when the file or a deletion changes (a pending clip finishing)."""
         try:
             stat = self.index_path.stat()
             stamp = (stat.st_mtime_ns, stat.st_size)
         except OSError:
             stamp = None
+        stamp = (stamp, self.deletions.version if self.deletions else 0)
         if stamp != self._index_stamp:
             self._index_stamp = stamp
             try:
-                self._index_clips = load_index(self.index_path) if stamp else []
+                if stamp[0] is None:
+                    self._index_clips = []
+                elif self.deletions is not None:
+                    self._index_clips = self.deletions.load_clips()
+                else:
+                    self._index_clips = load_index(self.index_path)
             except (OSError, ValueError, KeyError, TypeError):
                 self._index_clips = []
         return self._index_clips

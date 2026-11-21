@@ -1,6 +1,7 @@
 """One workspace for actual session state, events and saved clip review."""
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QLabel, QTabWidget, QVBoxLayout, QWidget
+from ..clips.deletion import DeletionManager
 from ..clips.panel import ClipPanel
 from ..sensing.camera import CameraControl
 from ..session.panel import SessionPanel
@@ -37,9 +38,12 @@ class Workspace(QWidget):
         layout.addWidget(self.session_panel, 2)
         self.tabs = QTabWidget()
         # Tonight's Highlights (R4): FINAL events by intensity, linked to saved clips.
-        self.highlights = HighlightsPanel(session, index_path)
+        # Clip deletion (R7): journal and tombstones next to the clip index. The
+        # server has no cleanup API yet, so only local cleanup is required.
+        self.deletions = DeletionManager(index_path)
+        self.highlights = HighlightsPanel(session, index_path, deletions=self.deletions)
         self.tabs.addTab(self.highlights, "Tonight's Highlights")
-        self.clips = ClipPanel(index_path)
+        self.clips = ClipPanel(index_path, deletions=self.deletions)
         self.tabs.addTab(self.clips, "Saved clips")
         self.highlights.play_requested.connect(self.play_clip)
         layout.addWidget(self.tabs, 1)
@@ -66,6 +70,8 @@ class Workspace(QWidget):
         self.camera_panel.refresh()
         if self.microphone is not None:
             self.microphone.refresh()
+        self.deletions.tick()
+        self.clips.sync()
         self.highlights.refresh()
         self.highlights.setEnabled(not self.session.stale)
 
