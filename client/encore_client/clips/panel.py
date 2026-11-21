@@ -65,6 +65,16 @@ class ClipPanel(QWidget):
         self.detail.setText(f"{clip.title}\n{effective_label(clip, self.index_path.parent)}" if clip
                             else "Select a saved clip" if self.clips else "No saved clips in this index.")
 
+    def play_file(self, path):
+        """Play a checked clip file chosen elsewhere (Tonight's Highlights)."""
+        path = Path(path)
+        if not (path.is_file() and path.stat().st_size > 0):
+            self.detail.setText(f"Clip file is missing: {path.name}")
+            return
+        self.detail.setText(f"Playing {path.name}")
+        self.player.setSource(QUrl.fromLocalFile(str(path)))
+        self.player.play()
+
     def play(self):
         clip = self.selected()
         path = playable_path(clip, self.index_path.parent) if clip else None

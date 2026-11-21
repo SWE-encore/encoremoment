@@ -4,9 +4,9 @@ from PySide6.QtWidgets import QLabel, QTabWidget, QVBoxLayout, QWidget
 from ..clips.panel import ClipPanel
 from ..sensing.camera import CameraControl
 from ..session.panel import SessionPanel
-from ..session.session import Conn, event_rows
+from ..session.session import Conn
 from .camera_panel import CameraPanel
-from .formatting import format_ms
+from .highlights import HighlightsPanel
 
 ACTIVE = (Conn.CONNECTING, Conn.CONNECTED, Conn.DISCONNECTED)
 
@@ -36,11 +36,12 @@ class Workspace(QWidget):
         self.session_panel.end_btn.clicked.connect(self.end_session)
         layout.addWidget(self.session_panel, 2)
         self.tabs = QTabWidget()
-        self.highlights = QLabel("No finalized reactions yet.")
-        self.highlights.setWordWrap(True)
+        # Tonight's Highlights (R4): FINAL events by intensity, linked to saved clips.
+        self.highlights = HighlightsPanel(session, index_path)
         self.tabs.addTab(self.highlights, "Tonight's Highlights")
         self.clips = ClipPanel(index_path)
         self.tabs.addTab(self.clips, "Saved clips")
+        self.highlights.play_requested.connect(self.play_clip)
         layout.addWidget(self.tabs, 1)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
@@ -65,14 +66,13 @@ class Workspace(QWidget):
         self.camera_panel.refresh()
         if self.microphone is not None:
             self.microphone.refresh()
-        rows = [row for row in event_rows(self.session.view) if row["phase"] == "FINAL"]
-        rows.sort(key=lambda row: (-(row["intensity"] if row["intensity"] is not None else -1),
-                                   row["trigger_ms"], row["event_id"]))
-        self.highlights.setText("\n".join(
-            f"{row['type']} · intensity {row['intensity']} · "
-            f"{format_ms(row['timecode_ms'])} · {row['event_id']} · no exported clip linked"
-            for row in rows) or "No finalized reactions yet.")
+        self.highlights.refresh()
         self.highlights.setEnabled(not self.session.stale)
+
+    def play_clip(self, path):
+        """Play a highlight's clip in the Saved clips player (pauses the content player)."""
+        self.tabs.setCurrentWidget(self.clips)
+        self.clips.play_file(path)
 
     def shutdown(self):
         self.timer.stop()

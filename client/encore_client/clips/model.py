@@ -43,6 +43,11 @@ class Clip:
     path: str | None = None    # Path relative to the index file
     gaps: list[list[float]] = field(default_factory=list)  # Missing ranges [start_s, end_s]
     title: str = ""
+    # Explicit link to live events (R4). The clip pipeline writes these; a clip
+    # without them is never matched to an event by type or time.
+    session_id: str | None = None
+    event_ids: tuple[str, ...] = ()   # several events may share one clip
+    part: int = 0                     # clip index within the event (R10 linked clips)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Clip":
@@ -55,6 +60,9 @@ class Clip:
             path=d.get("path"),
             gaps=d.get("gaps", []),
             title=d.get("title", ""),
+            session_id=d.get("session_id"),
+            event_ids=tuple(d.get("event_ids", ())),
+            part=int(d.get("part", 0)),
         )
 
 
