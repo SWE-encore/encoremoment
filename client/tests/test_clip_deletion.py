@@ -295,3 +295,22 @@ def test_panel_cancel_keeps_the_clip(app, tmp_path):
     panel.list.setCurrentRow(0)
     assert not panel.delete_selected()
     assert (tmp_path / "c1.mp4").exists() and not journal_path(index).exists()
+
+
+def test_two_desktops_preserve_pending_cleanup_and_operation_identity(tmp_path):
+    index = setup(tmp_path, [entry("one", "one.mp4", ["e1"]), entry("two", "two.mp4", ["e2"])],
+                  ("one.mp4", "two.mp4"))
+    remote = Remote(online=False)
+    first = manager(index, remote=remote)
+    second = manager(index)
+    expected = first.delete("one")
+    assert second.delete("one").op_id == expected.op_id
+    assert second.delete("two").completed
+    assert not second.may_commit_export("one")
+    restarted = manager(index, remote=remote)
+    assert set(restarted.ops) == {"one", "two"}
+    assert not restarted.state("one").completed
+    remote.online = True
+    first.process()
+    assert first.state("one").completed and first.state("two").completed
+    assert {request[0] for request in remote.requests} == {expected.op_id}
