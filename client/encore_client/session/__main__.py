@@ -63,6 +63,9 @@ def run_headless(session: Session, driver: ScenarioDriver | None, timeout_s: flo
     print(f"[session] ignored {summary['ignored']}  rejected {summary['rejected']}  "
           f"received {summary['received']}  sent {summary['sent']}{audio}", flush=True)
     session.log.close()
+    if session.end_settled is False:
+        print("[session] The server did not confirm session end. Final results may be incomplete.", file=sys.stderr)
+        return 1
     return 0 if complete and not dropped else 1
 
 

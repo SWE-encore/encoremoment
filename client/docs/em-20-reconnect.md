@@ -47,6 +47,8 @@ Five deliberate faults were each caught: End without turning the microphone off,
 
 The headless app was run against the real server with a laugh still in progress when the run ended (the server's idle close disabled). The output went from `evt-0001 OPEN` to `evt-0001 FINAL`, then the server logged "session ended". Exit code 0.
 
+If the live server disconnects during End or the three-second wait expires before all controls and reactions are confirmed, the headless client warns on standard error that final results may be incomplete and exits with code 1.
+
 Run:
 
 ```sh
