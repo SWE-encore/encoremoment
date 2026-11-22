@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from .fusion import TabRules
 
@@ -22,6 +23,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--model", choices=("yamnet", "loudness"), default="yamnet",
                     help="yamnet (needs TensorFlow) or loudness (a stand-in: any loud sound is laughter)")
     ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--record-history", action="store_true",
+                    help="archive FINAL events in PostgreSQL using DATABASE_URL")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--unix-socket", help="listen at a local socket path for an SSH tunnel")
     ap.add_argument("--face-python", help="Python inside the MediaPipe environment")
@@ -34,6 +37,21 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("supply both face options and a smile threshold in (0, 1]")
     if args.demo_quiet_ms <= 0:
         ap.error("--demo-quiet-ms must be positive")
+
+    history = None
+    if args.record_history:
+        from .history import HistoryUnavailable, PostgresHistory
+        dsn = os.environ.get("DATABASE_URL")
+        if not dsn:
+            ap.error("--record-history requires DATABASE_URL")
+        try:
+            history = PostgresHistory(dsn)
+        except ImportError:
+            ap.error("install server/requirements-history.txt to use --record-history")
+        try:
+            asyncio.run(history.check())
+        except HistoryUnavailable:
+            ap.error("could not access reaction_events; check DATABASE_URL, permissions and the schema")
 
     from .models import load_model
     from .server import EncoreServer
@@ -53,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         if face is not None:
             say(f"rolling fusion: laughter >= {TabRules.strong_audio} or laughter >= {TabRules.assisted_audio} "
                 f"with smile >= {args.smile_threshold:g} for {TabRules.equivalent_hops} equivalent hops in 5 s; quiet {args.demo_quiet_ms} ms")
-        app = EncoreServer(model, say=say, face_model=face,
+        app = EncoreServer(model, say=say, face_model=face, history=history,
                            smile_threshold=args.smile_threshold, quiet_ms=args.demo_quiet_ms)
         asyncio.run(app.run(args.host, args.port, unix_socket=args.unix_socket))
     except KeyboardInterrupt:
