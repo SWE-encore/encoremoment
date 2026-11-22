@@ -28,7 +28,7 @@ def main(argv=None):
                         help="stand-in microphone until capture exists: stream this mono 16 kHz "
                              "16-bit WAV to the server while the session's microphone is on")
     parser.add_argument("--mic", action="store_true",
-                        help="capture the PC's default microphone (no echo cancellation; use headphones)")
+                        help="capture the PC's default microphone; use the controlled player as the echo reference")
     parser.add_argument("--local-server", choices=("loudness", "yamnet"),
                         help="start a session server inside the app with this model instead of using --server")
     parser.add_argument("--trigger", action="append", metavar="REACTION=LEVEL",
@@ -151,14 +151,17 @@ def main(argv=None):
             mic_timer.start(50)
         if args.mic:
             from .sensing.live_mic import LiveMicrophone, QtAudioInput
+            source = LiveMicrophone(session, player=None if args.no_player else win.player)
             try:
-                qt_mic = QtAudioInput(LiveMicrophone(session))  # opened by the switch (R8)
+                qt_mic = QtAudioInput(source)  # opened by the switch (R8)
             except RuntimeError as exc:
                 parser.exit(2, f"--mic: {exc}\n")
+            workspace.live_microphone = source
             where = f"built-in {local.model_name} server" if local else url
             workspace.sensing.setText(
-                "No echo cancellation (aec: off): use headphones if anything else is playing\n"
-                f"Analysis: {where}" + (" · times are seconds since Start" if mic_clock else ""))
+                f"Start enables microphone analysis at {where}."
+                + (" Times are seconds since Start." if mic_clock else ""))
+            workspace.sensing.setWordWrap(True)
             workspace.add_microphone(MicrophoneSwitch(session, qt_mic, source=qt_mic.device.description()))
         app.aboutToQuit.connect(workspace.shutdown)
         win.show()

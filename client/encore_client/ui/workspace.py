@@ -19,6 +19,7 @@ class Workspace(QWidget):
         self.setMinimumWidth(540)
         self.session = session
         self.microphone = None
+        self.live_microphone = None
         layout = QVBoxLayout(self)
         # Camera (R5, R6): real state from the media layer's device, or "unavailable".
         self.camera = (CameraControl(camera_device, session, lambda: session.state in ACTIVE)
@@ -27,6 +28,9 @@ class Workspace(QWidget):
         layout.addWidget(self.camera_panel)
         self.sensing = QLabel("Microphone: Off — capture unavailable")
         layout.addWidget(self.sensing)
+        self.aec_label = QLabel()
+        self.aec_label.hide()
+        layout.addWidget(self.aec_label)
         if demo:
             label = QLabel("Demo: prerecorded contract messages; no camera, microphone or AI inference.")
             label.setWordWrap(True)
@@ -73,6 +77,9 @@ class Workspace(QWidget):
         self.camera_panel.refresh()
         if self.microphone is not None:
             self.microphone.refresh()
+        if self.live_microphone is not None:
+            self.aec_label.setText(f"Echo cancellation: {self.live_microphone.aec_status}")
+            self.aec_label.setVisible(True)
         self.deletions.tick()
         self.clips.sync()
         self.highlights.refresh()

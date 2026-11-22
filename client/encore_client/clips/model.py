@@ -58,6 +58,14 @@ class Clip:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Clip":
+        if not isinstance(d, dict):
+            raise ValueError("clip index entry must be an object")
+        for key in ("path", "thumbnail"):
+            if d.get(key) is not None and not isinstance(d[key], str):
+                raise ValueError(f"clip {key} must be a file name")
+        temp_paths = d.get("temp_paths", [])
+        if not isinstance(temp_paths, list) or any(not isinstance(path, str) for path in temp_paths):
+            raise ValueError("clip temp_paths must be a list of file names")
         return cls(
             clip_id=d["clip_id"],
             event_type=d["event_type"],
@@ -71,7 +79,7 @@ class Clip:
             event_ids=tuple(d.get("event_ids", ())),
             part=int(d.get("part", 0)),
             thumbnail=d.get("thumbnail"),
-            temp_paths=tuple(d.get("temp_paths", ())),
+            temp_paths=tuple(temp_paths),
             trim_ms=tuple(d.get("trim_ms", ())),
         )
 
@@ -105,6 +113,8 @@ def load_index(index_path: Path, *, required: bool = False) -> list[Clip]:
     if not required and not index_path.is_file():
         return []
     data = json.loads(index_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("clip index must be an object")
     entries = data["clips"] if required else data.get("clips", [])
     if not isinstance(entries, list):
         raise ValueError("clip index entries must be a list")
