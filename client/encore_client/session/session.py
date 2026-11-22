@@ -47,6 +47,7 @@ import secrets
 import socket
 import threading
 import time
+from collections import deque
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -92,10 +93,11 @@ class Transport(Protocol):
     def send(self, data: str | bytes) -> bool: ...  # str: text frame, bytes: binary frame
     def poll(self) -> list[tuple[str, Any]]: ...
     def close(self) -> None: ...
+    def abort(self) -> None: ...
 
 
 class WsTransport:
-    """One WebSocket connection on a background thread.
+    """One WebSocket connection with background reads and writes.
 
     ``poll()`` returns what happened since the last call:
     ``("open", None)``, ``("message", text)`` or ``("closed", reason)``.
@@ -115,7 +117,12 @@ class WsTransport:
         self._connect = connect
         self._ping_s = ping_s
         self._silence_s = silence_s
-        self._q: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self._q: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=128)
+        self.backlogged = False
+        self._out: deque[str | bytes] = deque()
+        self._sending_media = False
+        self._dropped = 0
+        self._write_ready = threading.Condition()
         self._ws: ws.WebSocket | None = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="encore-ws", daemon=True)
@@ -124,27 +131,88 @@ class WsTransport:
         self._thread.start()
 
     def send(self, data: str | bytes) -> bool:
-        conn = self._ws
-        if conn is None or conn.closed:
-            return False
-        try:
-            conn.send(data)
+        with self._write_ready:
+            conn = self._ws
+            if conn is None or conn.closed or self._stop.is_set():
+                return False
+            # Keep the UI thread off the socket. Saturated media is dropped so a
+            # backlog cannot send seconds of old audience input after recovery.
+            if isinstance(data, bytes):
+                if sum(isinstance(pending, bytes) for pending in self._out) >= 4:
+                    return False
+            else:
+                msg = json.loads(data)
+                if msg["kind"] == "control_update" and not msg["enabled"] and msg["sensor"] in ("camera", "microphone"):
+                    self._discard_media(camera_only=msg["sensor"] == "camera")
+            self._out.append(data)
+            self._write_ready.notify()
             return True
+
+    def _discard_media(self, *, camera_only: bool = False) -> None:
+        keep = deque(packet for packet in self._out if isinstance(packet, str)
+                     or (camera_only and not packet.startswith(b"EMV1")))
+        self._dropped += len(self._out) - len(keep)
+        self._out = keep
+
+    @property
+    def media_pending(self) -> bool:
+        with self._write_ready:
+            return self._sending_media or any(isinstance(packet, bytes) for packet in self._out)
+
+    def take_dropped(self) -> int:
+        with self._write_ready:
+            dropped, self._dropped = self._dropped, 0
+            return dropped
+
+    def _write(self, conn: ws.WebSocket) -> None:
+        try:
+            while True:
+                with self._write_ready:
+                    self._write_ready.wait_for(lambda: self._out or self._stop.is_set())
+                    if not self._out:
+                        break
+                    data = self._out.popleft()
+                    self._sending_media = isinstance(data, bytes)
+                conn.send(data)
+                with self._write_ready:
+                    self._sending_media = False
+            conn.close(1000, "session ended")
         except ws.WsClosed:
-            return False
+            with self._write_ready:
+                self._dropped += int(self._sending_media)
+                self._sending_media = False
 
     def poll(self) -> list[tuple[str, Any]]:
         out = []
-        while True:
+        for _ in range(32):
             try:
                 out.append(self._q.get_nowait())
             except queue.Empty:
-                return out
+                break
+        self.backlogged = not self._q.empty()
+        return out
+
+    def _enqueue(self, item: tuple[str, Any]) -> bool:
+        while True:
+            try:
+                self._q.put_nowait(item)
+                return True
+            except queue.Full:
+                self.backlogged = True
+                if self._stop.wait(0.01):
+                    return False
 
     def close(self) -> None:
-        self._stop.set()
+        with self._write_ready:
+            self._discard_media()
+            self._stop.set()
+            self._write_ready.notify()
+
+    def abort(self) -> None:
+        """Break the socket so the server retains replay state on a forced reconnect."""
         if self._ws is not None:
-            self._ws.close(1000, "session ended")
+            self._ws.abort()
+        self.close()
 
     def _run(self) -> None:
         try:
@@ -157,22 +225,27 @@ class WsTransport:
             conn.close(1000, "session ended")
             self._q.put(("closed", "session ended"))
             return
-        self._q.put(("open", None))
         conn.sock.settimeout(min(1.0, self._ping_s))
+        writer = threading.Thread(target=self._write, args=(conn,), name="encore-ws-send", daemon=True)
+        writer.start()
+        self._q.put(("open", None))
         last_ping = time.monotonic()
         while True:
             try:
-                self._q.put(("message", conn.recv()))
+                if not self._enqueue(("message", conn.recv())):
+                    return
             except socket.timeout:
                 pass
             except ws.WsClosed as exc:
                 reason = "session ended" if self._stop.is_set() else _close_reason(exc)
-                self._q.put(("closed", reason))
+                self._enqueue(("closed", reason))
+                self.close()
                 return
             now = time.monotonic()
             if now - conn.last_rx > self._silence_s:
                 conn.abort()
-                self._q.put(("closed", f"no response from server for {self._silence_s:g} s"))
+                self._enqueue(("closed", f"no response from server for {self._silence_s:g} s"))
+                self.close()
                 return
             if now - last_ping >= self._ping_s:
                 last_ping = now
@@ -273,6 +346,7 @@ class Session:
         self._clock = clock
         self._factory = transport_factory
         self._transport: Transport | None = None
+        self._gap_since_ms: int | None = None
 
     # ---- user actions ----------------------------------------------------------
 
@@ -330,11 +404,12 @@ class Session:
         return [m["idempotency_key"] for m in self.controls if m["idempotency_key"] not in self.acks]
 
     def _end_when_settled(self, stream_closed: bool = False) -> None:
-        settled = not self.open_events and not self.unacked_controls
+        pending_results = bool(self.view.buffered) or getattr(self._transport, "backlogged", False)
+        settled = not pending_results and not self.open_events and not self.unacked_controls
         if settled or stream_closed or self._clock() >= self._end_by_ms:
             self.end_settled = settled
             self.log.write("end_wait", settled=settled, open_events=self.open_events,
-                           unacked=self.unacked_controls)
+                           unacked=self.unacked_controls, pending_results=pending_results)
             self.end()
 
     def end(self) -> None:
@@ -346,6 +421,18 @@ class Session:
         self.log.write("end", unsent=len(self.unsent))
         if self._transport is not None:
             self._transport.close()
+            self._count_drops()
+
+    @property
+    def media_pending(self) -> bool:
+        return getattr(self._transport, "media_pending", False)
+
+    def _count_drops(self) -> None:
+        take = getattr(self._transport, "take_dropped", None)
+        if take is not None:
+            discarded = take()
+            self.audio_sent -= discarded
+            self.audio_dropped += discarded
 
     # ---- outgoing --------------------------------------------------------------
 
@@ -516,6 +603,7 @@ class Session:
         """Handle what the transport delivered. Returns True if anything changed."""
         if self._transport is None:
             return False
+        self._count_drops()
         changed = False
         for what, data in self._transport.poll():
             changed = True
@@ -524,11 +612,15 @@ class Session:
                     continue
                 self._on_open()
             elif what == "message":
+                if self.state not in (Conn.CONNECTED, Conn.ENDING):
+                    continue  # A retired stream may still have unread frames.
                 self._on_message(data)
                 if self.lost:
                     self._give_up()
                     break  # the transport is closed; what is left of it is not read
             elif what == "closed":
+                if self.state is Conn.DISCONNECTED:
+                    continue  # already scheduled recovery for a missing cursor
                 self.log.write("closed", reason=data)
                 if self.state is Conn.ENDING:
                     self._end_when_settled(stream_closed=True)  # nothing more will arrive
@@ -536,6 +628,21 @@ class Session:
                     self.reason = data
                     self._set_state(Conn.DISCONNECTED)
                     self._schedule_retry()
+        if self.state is Conn.CONNECTED and self.view.buffered and self.reconnect_delays_ms:
+            now = self._clock()
+            if self._gap_since_ms is None:
+                self._gap_since_ms = now
+            if now - self._gap_since_ms >= 1_000 or len(self.view.buffered) >= 128:
+                self._transport.abort()
+                self.view.buffered.clear()  # replay all later records from the last applied cursor
+                self.reason = f"missing result at cursor {self.view.next_cursor}"
+                self.log.write("replay_required", cursor=self.view.next_cursor)
+                self._set_state(Conn.DISCONNECTED)
+                self._schedule_retry()
+                self._gap_since_ms = None
+                changed = True
+        else:
+            self._gap_since_ms = None
         if (self.state is Conn.DISCONNECTED and self.retry_at_ms is not None
                 and self._clock() >= self.retry_at_ms):
             self.reconnect()
@@ -615,7 +722,9 @@ class Session:
     @property
     def stale(self) -> bool:
         """Live results may be out of date: the stream dropped (R9)."""
-        return self.state in (Conn.DISCONNECTED, Conn.RECONNECTING)
+        return self.state in (Conn.DISCONNECTED, Conn.RECONNECTING) or (
+            self.state is Conn.CONNECTED and (bool(self.view.buffered)
+                                              or getattr(self._transport, "backlogged", False)))
 
     def _set_state(self, state: Conn) -> None:
         self.state = state
