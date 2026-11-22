@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
 
     history = None
     if args.record_history:
-        from .history import HistoryUnavailable, PostgresHistory
+        from .history import FinalOutbox, HistoryUnavailable, OutboxUnavailable, PostgresHistory, outbox_path
         dsn = os.environ.get("DATABASE_URL")
         if not dsn:
             ap.error("--record-history requires DATABASE_URL")
@@ -51,7 +51,15 @@ def main(argv: list[str] | None = None) -> int:
         try:
             asyncio.run(history.check())
         except HistoryUnavailable:
-            ap.error("could not access reaction_events; check DATABASE_URL, permissions and the schema")
+            path = outbox_path()
+            try:
+                recovering = path.is_file() and bool(FinalOutbox(path).sessions())
+            except OutboxUnavailable:
+                ap.error("cannot recover pending history; check ENCORE_HISTORY_OUTBOX and disk access")
+            if not recovering:
+                ap.error("could not access reaction_events; check DATABASE_URL, permissions and the schema")
+            print("[server] PostgreSQL unavailable; retaining pending FINALs and retrying in the background",
+                  file=sys.stderr, flush=True)
 
     from .models import load_model
     from .server import EncoreServer

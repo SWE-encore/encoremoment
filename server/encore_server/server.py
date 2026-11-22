@@ -27,7 +27,7 @@ from websockets.exceptions import ConnectionClosed
 
 from .detector import DetectorConfig, Frame
 from .fusion import TabRules
-from .history import HistoryUnavailable, PostgresHistory, SessionArchive
+from .history import HistoryUnavailable, OutboxUnavailable, PostgresHistory, SessionArchive
 from .session import IDLE_S, ServerSession
 from .stream import messages_with_idle
 
@@ -76,6 +76,8 @@ class EncoreServer:
             address = f"ws://{host}:{port}/v1/sessions/<session_id>/stream"
         try:
             async with listener:
+                if self.archive:
+                    self.archive.start()
                 self.say(f"listening on {address}")
                 await asyncio.get_running_loop().create_future()  # until cancelled
         finally:
@@ -85,14 +87,26 @@ class EncoreServer:
         """After all WS handlers exit, finalize and drain known sessions on orderly stop."""
         if self.archive is None:
             return
-        await self.archive.stop()
+        stage_failure = None
+        # First preserve every open session. A slow SQL write must never delay another
+        # session's finalization past the service manager's termination deadline.
         for session in self.sessions.values():
             for msg in session.end():
                 self._report(session.session_id, msg)
             try:
-                await self.archive.flush(session)
-            except HistoryUnavailable:
-                self.say(f"{session.session_id}: terminating with unarchived FINALs; database unavailable")
+                await self.archive.stage(session)
+            except OutboxUnavailable as exc:
+                stage_failure = exc
+                self.say(f"{session.session_id}: local outbox unavailable during shutdown; check disk immediately")
+        try:
+            async with asyncio.timeout(5):
+                await self.archive.stop()
+                for sid in await asyncio.to_thread(self.archive.outbox.sessions):
+                    await self.archive.drain(sid)
+        except (TimeoutError, HistoryUnavailable):
+            self.say("FINALs pending in the durable history outbox will be retried on restart")
+        if stage_failure is not None:
+            raise stage_failure
 
     async def check_path(self, connection, request):
         path = urlsplit(request.path).path
@@ -102,6 +116,8 @@ class EncoreServer:
             try:
                 if sid in self.sessions:
                     await self.archive.flush(self.sessions[sid])
+                else:
+                    await self.archive.drain(sid)
                 events = await self.archive.store.for_session(sid)
             except HistoryUnavailable:
                 return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "History temporarily unavailable\n")
@@ -138,6 +154,8 @@ class EncoreServer:
         self.say(f"{sid}: connected, {len(session.results_after(after))} result(s) to replay")
         try:
             async with lock:
+                if self.archive:
+                    await self.archive.notify(session)
                 replay = session.results_after(after)
             for msg in replay:
                 await ws.send(json.dumps(msg, ensure_ascii=False))
@@ -151,7 +169,7 @@ class EncoreServer:
                         else:
                             out = session.on_text(data)
                         if self.archive:
-                            self.archive.notify(session, out)
+                            await self.archive.notify(session)
                     for msg in out:
                         if msg["kind"] == "demo_scores":
                             windows += 1
@@ -160,6 +178,9 @@ class EncoreServer:
                                          f"smile={msg['smile']} faces={msg['faces_seen']}/{msg['face_frames']}")
                         self._report(sid, msg)
                         await ws.send(json.dumps(msg, ensure_ascii=False))
+        except OutboxUnavailable:
+            self.say(f"{sid}: local history outbox unavailable; closing stream before delivering FINAL")
+            await ws.close(1011, "local history outbox unavailable")
         except ConnectionClosed:
             pass
         finally:
@@ -171,7 +192,7 @@ class EncoreServer:
                         for msg in final:
                             self._report(sid, msg)
                         if self.archive:
-                            self.archive.notify(session, final)
+                            await self.archive.notify(session)
                     self.say(f"{sid}: session ended")
                 else:
                     self.say(f"{sid}: connection dropped ({ws.close_code}); kept for a reconnect")
@@ -197,6 +218,8 @@ def serve_in_thread(app: EncoreServer, host: str = "127.0.0.1", port: int = 0):
     async def main() -> None:
         async with serve(app.handler, host, port, process_request=app.check_path,
                          max_size=MAX_MESSAGE) as server:
+            if app.archive:
+                app.archive.start()
             box["server"] = server
             box["port"] = server.sockets[0].getsockname()[1]
             started.set()
