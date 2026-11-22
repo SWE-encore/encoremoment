@@ -115,7 +115,7 @@ class EncoreServer:
                 return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "Face worker unavailable\n")
             if path == "/readyz" and self.archive is not None:
                 try:
-                    await self.archive.store.check()
+                    await self.archive.check()
                 except HistoryUnavailable:
                     return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "History unavailable\n")
             return connection.respond(HTTPStatus.OK, "OK\n")

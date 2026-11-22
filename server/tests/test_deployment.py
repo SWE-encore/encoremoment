@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from http import HTTPStatus
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -79,9 +79,11 @@ asyncio.run(_serve(App(), SimpleNamespace(host="127.0.0.1", port=0, unix_socket=
                     proc.wait()
 
     def test_readiness_includes_enabled_dependencies(self):
-        from encore_server.history import HistoryUnavailable
+        from encore_server.history import HistoryUnavailable, OutboxUnavailable
         from encore_server.server import EncoreServer
 
+        state = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.dict(os.environ, {"ENCORE_HISTORY_OUTBOX": str(state / "history.sqlite3")}))
         history = SimpleNamespace(check=AsyncMock())
         face = SimpleNamespace(ready=True)
         app = EncoreServer(Mock(), face_model=face, history=history)
@@ -93,6 +95,9 @@ asyncio.run(_serve(App(), SimpleNamespace(host="127.0.0.1", port=0, unix_socket=
         live = SimpleNamespace(path="/livez")
         self.assertEqual(asyncio.run(app.check_path(conn, live)), HTTPStatus.OK)
         history.check.side_effect = None
+        with patch.object(app.archive, "check", new=AsyncMock(side_effect=OutboxUnavailable)):
+            self.assertEqual(asyncio.run(app.check_path(conn, request)), HTTPStatus.SERVICE_UNAVAILABLE)
+            self.assertEqual(asyncio.run(app.check_path(conn, live)), HTTPStatus.OK)
         face.ready = False
         self.assertEqual(asyncio.run(app.check_path(conn, request)), HTTPStatus.SERVICE_UNAVAILABLE)
         self.assertEqual(asyncio.run(app.check_path(conn, live)), HTTPStatus.SERVICE_UNAVAILABLE)
