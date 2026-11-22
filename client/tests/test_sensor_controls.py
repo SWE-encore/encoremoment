@@ -11,6 +11,8 @@ No network, Qt or GStreamer: a fake transport stands in for the WebSocket.
 
 import json
 import socket
+from functools import partial
+from types import SimpleNamespace
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -188,6 +190,39 @@ def test_scenario_sessions_send_no_controls_of_their_own():
     session, transports = make_session()
     open_session(session, transports)
     assert transports[0].sent == []
+
+
+@pytest.mark.parametrize(("end_reply", "expected_exit"), [("ack", 0), ("timeout", 1), ("drop", 1)])
+def test_headless_cli_reports_unconfirmed_end(end_reply, expected_exit, monkeypatch, capsys):
+    from encore_client.session import __main__ as headless
+    from encore_server.models import LoudnessModel
+    from encore_server.session import ServerSession
+
+    server = ServerSession(SID, LoudnessModel())
+    now = 0.0
+
+    def sleep(seconds):
+        nonlocal now
+        now += seconds
+
+    class ControlTransport(FakeTransport):
+        def start(self):
+            self.pending.append(("open", None))
+
+        def send(self, text):
+            for ack in server.on_text(text):
+                if ack["generation"] == 1 or end_reply == "ack":
+                    self.pending.append(("message", json.dumps(ack)))
+                elif end_reply == "drop":
+                    self.pending.append(("closed", "connection lost"))
+            return True
+
+    monkeypatch.setattr(headless, "time", SimpleNamespace(sleep=sleep, monotonic=lambda: now))
+    monkeypatch.setattr("encore_client.__main__.Session",
+                        partial(Session, transport_factory=ControlTransport, clock=lambda: round(now * 1000)))
+    assert main(["--headless", "--session-id", SID, "--timeout", "1"]) == expected_exit
+    assert server.view.sensors["microphone"].generation == 2
+    assert ("server did not confirm" in capsys.readouterr().err) == (expected_exit == 1)
 
 
 # ---- ordering and validation ------------------------------------------------------
