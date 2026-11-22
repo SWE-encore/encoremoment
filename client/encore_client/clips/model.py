@@ -1,7 +1,7 @@
 """Clip list model (Qt-free, so it can be unit-tested).
 
 Rules (Specification IV-D, Requirement 4):
-  - Clip status: pending / ready / partial / unavailable / deletion_pending
+  - Clip status: pending / ready / partial / unavailable / deletion_pending / deleted
   - A playback link is shown only for a saved file that has been finalized and checked.
     -> Playable only if the status is ready or partial, the file exists, and it is not empty.
   - If the index says "ready" but the file is missing, hide the playback link and show "File missing".
@@ -19,7 +19,8 @@ class ClipStatus(str, Enum):
     READY = "ready"                        # Finalized and checked
     PARTIAL = "partial"                    # Finalized, but some portions are missing (e.g. camera enabled late)
     UNAVAILABLE = "unavailable"            # No footage (camera off, export failed) -> metadata only
-    DELETION_PENDING = "deletion_pending"  # Deletion in progress (Requirement 7, next sprint)
+    DELETION_PENDING = "deletion_pending"  # Deletion requested, cleanup not finished (R7)
+    DELETED = "deleted"                    # Media removed; event metadata may remain (R7)
 
 
 STATUS_LABEL = {
@@ -28,6 +29,7 @@ STATUS_LABEL = {
     ClipStatus.PARTIAL: "⚠️ Partial",
     ClipStatus.UNAVAILABLE: "— No footage",
     ClipStatus.DELETION_PENDING: "🗑 Deleting",
+    ClipStatus.DELETED: "🗑 Deleted",
 }
 
 PLAYABLE_STATUSES = {ClipStatus.READY, ClipStatus.PARTIAL}
@@ -43,6 +45,14 @@ class Clip:
     path: str | None = None    # Path relative to the index file
     gaps: list[list[float]] = field(default_factory=list)  # Missing ranges [start_s, end_s]
     title: str = ""
+    # Explicit link to live events (R4). The clip pipeline writes these; a clip
+    # without them is never matched to an event by type or time.
+    session_id: str | None = None
+    event_ids: tuple[str, ...] = ()   # several events may share one clip
+    part: int = 0                     # clip index within the event (R10 linked clips)
+    # Other local files removed together with the clip (R7)
+    thumbnail: str | None = None
+    temp_paths: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, d: dict) -> "Clip":
@@ -55,6 +65,11 @@ class Clip:
             path=d.get("path"),
             gaps=d.get("gaps", []),
             title=d.get("title", ""),
+            session_id=d.get("session_id"),
+            event_ids=tuple(d.get("event_ids", ())),
+            part=int(d.get("part", 0)),
+            thumbnail=d.get("thumbnail"),
+            temp_paths=tuple(d.get("temp_paths", ())),
         )
 
 
