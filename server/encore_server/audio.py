@@ -81,6 +81,7 @@ class AudioWindows:
         self.start_ms = 0
         self.next_chunk: int | None = None
         self._buf = bytearray()
+        self._aec = deque()
 
     def discontinuous(self, header: dict) -> bool:
         expected_ms = self.start_ms + len(self._buf) // 2 * 1000 // AUDIO_RATE
@@ -89,13 +90,30 @@ class AudioWindows:
 
     def add(self, header: dict, pcm: bytes) -> list[Window]:
         if self.discontinuous(header):
+            self._aec.clear()
             self.generation, self.start_ms, self._buf = header["generation"], header["capture_ms"], bytearray()
         self.next_chunk = header["chunk"] + 1
         self._buf += pcm
+        self._aec.append((len(pcm) // 2, header["aec"]))
         out = []
         while len(self._buf) >= 2 * WINDOW_SAMPLES:
+            count = 0
+            states = set()
+            for samples, status in self._aec:
+                count += samples
+                states.add(status)
+                if count >= WINDOW_SAMPLES:
+                    break
+            effective = states.pop() if len(states) == 1 else "uncancelled"
             out.append(Window(self.start_ms, self.start_ms + WINDOW_MS, bytes(self._buf[: 2 * WINDOW_SAMPLES]),
-                              self.generation, header["aec"]))
+                              self.generation, effective))
+            remaining = HOP_SAMPLES
+            while remaining:
+                samples, status = self._aec.popleft()
+                take = min(remaining, samples)
+                remaining -= take
+                if take < samples:
+                    self._aec.appendleft((samples - take, status))
             del self._buf[: 2 * HOP_SAMPLES]
             self.start_ms += HOP_MS
         return out
