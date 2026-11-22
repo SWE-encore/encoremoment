@@ -299,6 +299,45 @@ def test_malformed_journal_waits_for_repair_without_losing_tombstones(tmp_path, 
     assert restarted.delete("c2").completed
 
 
+@pytest.mark.parametrize("initially_online", [False, True])
+def test_missing_journal_preserves_shared_file_and_waits_for_original_operation(tmp_path, initially_online):
+    index = setup(tmp_path, [entry("c1", "shared.mp4", []), entry("c2", "shared.mp4", [])],
+                  files=("shared.mp4",))
+    remote = Remote(online=initially_online)
+    live = manager(index, remote=remote)
+    first = live.delete("c1")
+    journal = journal_path(index)
+    saved = journal.read_bytes()
+    journal.unlink()
+    restarted = manager(index, remote=remote)
+    for dm in (live, restarted):
+        assert not dm.may_commit_export("c1") and dm.journal_error
+        with pytest.raises(ValueError, match="restore"):
+            dm.delete("c2")
+    assert live.state("c1") == first
+    assert restarted.state("c1") is None
+    assert not journal.exists() and (tmp_path / "shared.mp4").is_file()
+    remote.online = True
+    journal.write_bytes(saved)
+    restarted.tick()
+    assert restarted.state("c1").completed
+    assert {op_id for op_id, _, _ in remote.requests} == {first.op_id}
+    assert (tmp_path / "shared.mp4").is_file()
+
+
+def test_lost_journal_still_blocks_known_tombstone_after_index_replaced(tmp_path):
+    index = setup(tmp_path, [entry("c1", "c1.mp4", [])])
+    original_index = index.read_bytes()
+    dm = manager(index)
+    op = dm.delete("c1")
+    journal_path(index).unlink()
+    restarted = manager(index)
+    assert restarted.journal_error
+    index.write_bytes(original_index)
+    assert not restarted.may_commit_export("c1")
+    assert not dm.may_commit_export("c1") and dm.state("c1") == op
+
+
 def test_invalid_file_list_cannot_remove_another_clips_file(tmp_path):
     index = setup(tmp_path, [entry("c1", "shared.mp4", []),
                              entry("c2", "c2.mp4", [], temp_paths=["shared.mp4"])],
