@@ -103,8 +103,10 @@ class ServerSession:
             rgb = None
             if data.startswith(MAGIC):
                 camera_generation, image_ms, rgb, data = unpack_pair(data)
-                if self.face_model is None or camera_generation != self._camera_generation():
-                    raise ValueError("unavailable or stale camera")
+                if camera_generation != self._camera_generation():
+                    raise ValueError("stale camera")
+                if self.face_model is None:
+                    rgb = None  # audio inference also works on a server without a face model
             header, pcm = decode_audio_frame(data)
         except ValueError:
             self.invalid += 1

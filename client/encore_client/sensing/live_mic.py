@@ -28,6 +28,7 @@ class LiveMicrophone:
         self.session = session
         self.player = player
         self.on_pcm = on_pcm
+        self._connected = None
         self.aec_status = "reference_unavailable" if player else "off"
         self._raw_buf = bytearray()
         self._statuses = deque()
@@ -52,14 +53,35 @@ class LiveMicrophone:
         self._statuses.clear()
         self._run = None
 
+    def local_recording_allowed(self) -> bool:
+        """While offline only the explicitly active camera's local audio tap can receive PCM."""
+        sensors = self.session.view.sensors
+        camera = sensors.get("camera")
+        return (self.on_pcm is not None and sensors["microphone"].enabled
+                and camera is not None and camera.enabled
+                and self.session.state in (Conn.CONNECTING, Conn.DISCONNECTED, Conn.RECONNECTING))
+
+    def connection_changed(self, connected: bool, generation: int) -> bool:
+        changed = self._connected is not None and self._connected != connected
+        self._connected = connected
+        if changed:
+            # Pending PCM still belongs to local media. Never mix it into the
+            # next connection's inference chunk or mark it as freshly captured.
+            if self.on_pcm and self._raw_buf and self._run and self._run[0] == generation:
+                self.on_pcm(bytes(self._raw_buf), self._run[1] + _ms(self._run[2]))
+            self._reset_run()
+        return changed
+
     def feed(self, data: bytes, *, end_ms: int | None = None,
              raw_pcm: bytes | None = None, aec: str = "off") -> int:
         """Audio just read from the device, ending now. Returns how many chunks went out."""
         mic = self.session.view.sensors["microphone"]
-        if not mic.enabled or self.session.state is not Conn.CONNECTED:
+        connected = self.session.state is Conn.CONNECTED
+        if not mic.enabled or (not connected and not self.local_recording_allowed()):
             self._reset_run()
             self.aec_status = "off"
             return 0
+        self.connection_changed(connected, mic.generation)
         raw_pcm = data if raw_pcm is None else raw_pcm
         if len(data) != len(raw_pcm):
             raise ValueError("unaligned analysis and recording PCM")
@@ -92,7 +114,7 @@ class LiveMicrophone:
             del self._raw_buf[: self.chunk_bytes]
             capture_ms = self._run[1] + _ms(self._run[2])
             self._run[2] += len(chunk)
-            if len(self.recording) < self._keep:
+            if connected and len(self.recording) < self._keep:
                 self.recording += raw_chunk[: self._keep - len(self.recording)]
             if self.on_pcm:
                 self.on_pcm(raw_chunk, capture_ms)
@@ -107,7 +129,7 @@ class LiveMicrophone:
                     self._statuses.appendleft((count - take, state))
             # A chunk spanning a reset must never advertise fully active AEC.
             chunk_aec = next(iter(states)) if len(states) == 1 else "uncancelled"
-            if self.session.send_audio(chunk, capture_ms, aec=chunk_aec):
+            if connected and self.session.send_audio(chunk, capture_ms, aec=chunk_aec):
                 sent += 1
         self.sent += sent
         return sent
@@ -232,12 +254,13 @@ class QtAudioInput:
                 mic = self.mic
                 now = mic._clock()
                 sensor = mic.session.view.sensors["microphone"]
-                if not sensor.enabled or mic.session.state is not Conn.CONNECTED:
+                connected = mic.session.state is Conn.CONNECTED
+                if not sensor.enabled or (not connected and not mic.local_recording_allowed()):
                     if self._generation is not None:
                         self._reset_echo()
                     return
                 span = self.format.durationForBytes(len(data)) // 1000
-                if (self._generation != sensor.generation or
+                if (mic.connection_changed(connected, sensor.generation) or self._generation != sensor.generation or
                         (self._last_end is not None and abs(now - self._last_end - span) > RESYNC_MS)):
                     self._reset_echo()
                 self._generation, self._last_end = sensor.generation, now
@@ -254,7 +277,7 @@ class QtAudioInput:
                 raw = bytes(self._capture_buffer[:size])
                 del self._capture_buffer[:size]
                 end_ms -= len(self._capture_buffer) // 96
-                cleaned, status = mic.player.cancel_echo(raw, end_ms - size // 96)
+                cleaned, status = mic.player.cancel_echo(raw, end_ms - size // 96) if connected else (raw, "off")
                 audio = self._clean_converter.convert(cleaned)
                 original = self._raw_converter.convert(raw)
                 if audio:
