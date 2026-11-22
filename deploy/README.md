@@ -9,13 +9,13 @@ docker compose -f deploy/compose.yaml up --build --wait
 docker compose -f deploy/compose.yaml exec -T server python deploy/smoke.py
 ```
 
-The lightweight image runs the existing loudness stand-in. The smoke client sends generated PCM twice with the original chunk keys, retries microphone control, and reconnects to check replay from two cursors. A successful run prints the session ID, FINAL ID and last cursor. To exercise the actual PC client, create a WAV with FFmpeg and run the headless client against the same service.
+The lightweight image runs the existing loudness stand-in. The smoke client sends generated PCM twice with the original chunk keys, retries microphone control, and reconnects to check replay from two cursors. A successful run prints the session ID, FINAL ID and last cursor. On the PC, run the desktop entry point against the mapped port with a generated two-second WAV. Python’s standard library is sufficient for this headless fixture check. The command verifies four delivered audio chunks, one laughter FINAL displayed by the PC, and both event timecodes against the microphone clock.
 
 ```sh
-ffmpeg -v error -f lavfi -i 'sine=frequency=440:duration=2' -ar 16000 -ac 1 -c:a pcm_s16le /tmp/encore-tone.wav
-PYTHONPATH=client .venv/bin/python -m encore_client --headless --no-player \
-  --mic-wav /tmp/encore-tone.wav --server ws://127.0.0.1:8876 --timeout 4
+python3 deploy/smoke.py --pc --server ws://127.0.0.1:8876
 ```
+
+The final JSON line contains the session ID, event ID and capture-time mapping. Save it with the checkout commit for the first-run Jira record.
 
 When the service runs on another host, first open the tunnel on the PC with `ssh -N -L 8876:127.0.0.1:8876 YOUR_ACCOUNT@SERVER_HOST`. End the trial with `docker compose -f deploy/compose.yaml down`. Sessions and replay cursors live in server memory. Clip files stay on the PC.
 

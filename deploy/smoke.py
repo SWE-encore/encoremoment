@@ -4,11 +4,11 @@ from array import array
 import json
 import math
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 from uuid import uuid4
 import wave
-
-from websockets.sync.client import connect
 
 CONTRACTS = Path(__file__).resolve().parents[1] / "contracts"
 sys.path.insert(0, str(CONTRACTS / "reference"))
@@ -32,6 +32,8 @@ def audio_blocks(wav):
 
 
 def replay(ws_url, control, after=0):
+    from websockets.sync.client import connect
+
     # The server sends every replayed event before processing the repeated control.
     events = []
     with connect(f"{ws_url}?after={after}", open_timeout=10) as ws:
@@ -46,12 +48,61 @@ def replay(ws_url, control, after=0):
                 events.append(msg)
 
 
+def pc_fixture(server):
+    """Run the desktop entry point and verify the event the PC actually displayed."""
+    with tempfile.TemporaryDirectory() as directory:
+        wav = Path(directory) / "tone.wav"
+        log = Path(directory) / "session.jsonl"
+        with wave.open(str(wav), "wb") as stream:
+            stream.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+            for pcm in audio_blocks(None):
+                stream.writeframes(pcm)
+        result = subprocess.run(
+            [sys.executable, "-m", "encore_client", "--headless", "--no-player",
+             "--mic-wav", str(wav), "--server", server, "--log", str(log), "--timeout", "3"],
+            cwd=CONTRACTS.parent / "client", timeout=25, stdout=subprocess.PIPE, text=True,
+        )
+        print(result.stdout, file=sys.stderr, end="")
+        result.check_returncode()
+        records = [json.loads(line) for line in log.read_text().splitlines()]
+
+    incoming = [row["msg"] for row in records if row["what"] == "in"]
+    finals = [msg for msg in incoming if msg["kind"] == "event_update" and msg["event"]["phase"] == "FINAL"]
+    if len(finals) != 1:
+        raise RuntimeError(f"Expected one FINAL at the PC; received {len(finals)}")
+    final = finals[0]
+    event = final["event"]
+    displayed = [line.split() for line in result.stdout.splitlines()]
+    expected_row = [event["event_id"], "laughter", "FINAL", "rev", str(event["revision"])]
+    if (expected_row not in displayed or event["source"]["model"] != "loudness-standin"
+            or "audio sent 4 dropped 0" not in result.stdout):
+        raise RuntimeError("The PC did not display the fixture FINAL with four delivered chunks")
+    anchor = next(row["msg"] for row in records if row["what"] == "out" and row["msg"]["kind"] == "playback_anchor")
+    playback = event["playback"]
+    if (playback.get("content_id") != "mic-clock" or
+            any(playback.get(f"timecode_{edge}_ms") != event["capture"][f"{edge}_ms"] - anchor["capture_ms"]
+                for edge in ("start", "end"))):
+        raise RuntimeError(f"PC event timecode does not match the microphone clock: {playback}")
+    print(json.dumps({"session_id": final["session_id"], "final_event_ids": [event["event_id"]],
+                      "timecode_start_ms": playback["timecode_start_ms"], "timecode_end_ms": playback["timecode_end_ms"]}))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--server", default="ws://127.0.0.1:8765")
-    ap.add_argument("--wav", type=Path, help="approved reaction recording for the YAMNet image")
+    source = ap.add_mutually_exclusive_group()
+    source.add_argument("--pc", action="store_true", help="use the actual desktop client with the loudness fixture")
+    source.add_argument("--wav", type=Path, help="approved reaction recording for the YAMNet image")
     ap.add_argument("--expect", choices=("laughter", "scream", "gasp"), default="laughter")
     args = ap.parse_args()
+    if args.pc:
+        if args.expect != "laughter":
+            ap.error("--pc expects laughter from the fixture")
+        pc_fixture(args.server)
+        return
+
+    from websockets.sync.client import connect
+
     sid = f"smoke-{uuid4().hex}"
     ws_url = f"{args.server.rstrip('/')}/v1/sessions/{sid}/stream"
     sample = json.loads((CONTRACTS / "samples/07_microphone_audio.json").read_text())
