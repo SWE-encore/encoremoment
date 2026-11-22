@@ -189,8 +189,7 @@ class WsTransport:
                 out.append(self._q.get_nowait())
             except queue.Empty:
                 break
-        if self._q.empty():
-            self.backlogged = False
+        self.backlogged = not self._q.empty()
         return out
 
     def _enqueue(self, item: tuple[str, Any]) -> bool:
@@ -612,8 +611,8 @@ class Session:
                     continue
                 self._on_open()
             elif what == "message":
-                if self.state is Conn.ENDED:
-                    continue
+                if self.state not in (Conn.CONNECTED, Conn.ENDING):
+                    continue  # A retired stream may still have unread frames.
                 self._on_message(data)
                 if self.lost:
                     self._give_up()

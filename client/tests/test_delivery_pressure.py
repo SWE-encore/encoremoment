@@ -87,6 +87,17 @@ def test_bounded_incoming_messages_and_stop_while_sender_is_blocked():
         peer.abort()
 
 
+def test_partial_drain_marks_unapplied_results_stale_before_queue_saturation():
+    transport = WsTransport("unused")
+    for n in range(45):
+        assert transport._enqueue(("message", str(n)))
+
+    assert len(transport.poll()) == 32
+    assert transport.backlogged
+    assert len(transport.poll()) == 13
+    assert not transport.backlogged
+
+
 def test_missing_cursor_reconnects_and_superseded_events_are_applied_once():
     sample = load_scenario(SAMPLES_DIR / "01_single_event.json")
     events = [step["msg"] for step in sample["messages"] if step["msg"]["kind"] == "event_update"]
@@ -127,6 +138,10 @@ def test_missing_cursor_reconnects_and_superseded_events_are_applied_once():
     now[0] = 1001
     s.poll()
     assert connections[0].aborted and s.state == Conn.DISCONNECTED
+    # The aborted reader may still have queued frames from its last socket read.
+    connections[0].items.append(("message", json.dumps(opened)))
+    s.poll()
+    assert not s.view.events
     now[0] += 50
     s.poll()
     assert connections[1].url.endswith("?after=0")
