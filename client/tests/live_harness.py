@@ -8,7 +8,7 @@ import time
 import wave
 
 from encore_client.player.anchors import AnchorTracker
-from encore_client.sensing.wav_mic import WavMicrophone
+from encore_client.sensing.wav_mic import CHUNK_MS, WavMicrophone
 from encore_client.session.session import Session
 
 RATE = 16_000
@@ -101,6 +101,14 @@ class Clock:
     def __call__(self):
         return self.t
 
+    def play(self, mic, duration_ms):
+        """Advance WAV capture one chunk at a time without consuming server responses."""
+        end = self.t + duration_ms
+        while self.t < end:
+            self.t = min(self.t + CHUNK_MS, end)
+            mic.pump()
+            wait_for(lambda: not mic.session.media_pending, "the audio writer")
+
 
 def wait(session, until, timeout=5.0):
     deadline = time.monotonic() + timeout
@@ -135,9 +143,9 @@ def start(app, relay, sid, delays=DELAYS_MS):
     return session
 
 
-def microphone(session, wav):
-    """The WAV as the microphone, its first sample at AUDIO_START_MS. Advance ``clock.t`` and pump."""
-    clock = Clock(AUDIO_START_MS)
+def microphone(session, wav, start_ms=AUDIO_START_MS):
+    """Start the WAV microphone at a known capture time, ready for clock.play()."""
+    clock = Clock(start_ms)
     mic = WavMicrophone(session, wav, clock=clock)
     mic.pump()  # fixes the capture time of the first sample
     return mic, clock

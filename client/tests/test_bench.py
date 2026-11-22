@@ -7,13 +7,15 @@ import struct
 import subprocess
 import time
 import wave
+from unittest.mock import Mock
 
 import pytest
 from PySide6.QtWidgets import QApplication
 
 from encore_client.bench.local import prepare_audio
 from encore_client.bench.window import BenchWindow
-from encore_client.session.session import Conn
+from encore_client.sensing.wav_mic import WavMicrophone
+from encore_client.session.session import Conn, Session, Transport, WsTransport
 
 RATE = 16_000
 
@@ -76,6 +78,37 @@ def test_a_file_with_a_loud_burst_gives_scores_and_a_mapped_event(app, tmp_path)
         assert win.table.rowCount() == 1 and win.table.item(0, 1).text() == "FINAL"
         assert "PC rejected nothing" in win.counts.text()
         assert win.start_btn.isEnabled() and not win.stop_btn.isEnabled()
+    finally:
+        win.close()
+
+
+def test_file_end_waits_for_the_last_audio_write(app, tmp_path):
+    win = BenchWindow()
+    try:
+        win.timer.stop()
+        session = Session("ws://unused")
+        session.set_sensor("microphone", True)
+        session.state = Conn.CONNECTED
+        transport = Mock(spec_set=WsTransport)
+        transport.take_dropped.return_value = 0
+        transport.poll.return_value = []
+        transport.send.return_value = True
+        transport.media_pending = True
+        session._transport = transport
+        win.session = session
+        win._began = True
+        now = [10_000]
+        wav = write_wav(tmp_path / "tail.wav", [(0.5, 0.5)])
+        win.source = WavMicrophone(session, wav, clock=lambda: now[0])
+        win.tick()
+        now[0] += 500
+        win.tick()
+        assert win.source.done and win.source.sent == 1
+        assert session.view.sensors["microphone"].enabled
+
+        transport.media_pending = False
+        win.tick()
+        assert not session.view.sensors["microphone"].enabled
     finally:
         win.close()
 
@@ -185,9 +218,7 @@ def test_yamnet_without_tensorflow_explains_what_to_install(app):
 
 @pytest.mark.parametrize("disconnect", [True, False])
 def test_capture_stops_on_disconnect_or_stop_and_recording_is_preserved(app, disconnect):
-    from encore_client.session.session import Session
     from encore_client.sensing.live_mic import LiveMicrophone
-    from unittest.mock import Mock
 
     win = BenchWindow()
     try:
@@ -195,7 +226,7 @@ def test_capture_stops_on_disconnect_or_stop_and_recording_is_preserved(app, dis
         session = Session("ws://127.0.0.1:1")
         session.set_sensor("microphone", True)
         session.state = Conn.CONNECTED
-        session._transport = Mock()
+        session._transport = Mock(spec_set=Transport)
         session._transport.poll.return_value = [("closed", "connection lost")] if disconnect else []
         win.session = session
         win.source = LiveMicrophone(session)

@@ -36,16 +36,14 @@ def test_a_dropped_session_reconnects_and_resumes_after_its_cursor(server, relay
     session = start(app, relay, "ses-r11-resume")
     server_session = app.sessions["ses-r11-resume"]
     mic, clock = microphone(session, two_laughs)
-    clock.t += 8_000  # the first laugh and its silence
-    mic.pump()
+    clock.play(mic, 8_000)  # the first laugh and its silence
     wait(session, lambda: finals(session) == 1)
     cursor = session.view.next_cursor - 1
 
     relay.cut()
     wait(session, lambda: session.state is Conn.DISCONNECTED)
     assert session.stale and "Reconnecting in" in status_text(session)
-    clock.t += 1_000  # captured while disconnected: dropped, never sent late (R9)
-    mic.pump()
+    clock.play(mic, 1_000)  # captured while disconnected: dropped, never sent late (R9)
     dropped = session.audio_dropped
     assert dropped > 0
 
@@ -55,8 +53,7 @@ def test_a_dropped_session_reconnects_and_resumes_after_its_cursor(server, relay
     assert attempt["after"] == cursor  # resume after the last applied result
     assert app.sessions["ses-r11-resume"] is server_session  # the server kept the session
 
-    clock.t += 7_000  # the second laugh
-    mic.pump()
+    clock.play(mic, 7_000)  # the second laugh
     wait(session, lambda: finals(session) == 2)
     session.end()
 
@@ -75,8 +72,7 @@ def test_results_lost_in_flight_are_replayed_once(server, relay, two_laughs):
     server_session = app.sessions["ses-r11-replay"]
     relay.drop["server->pc"] = True  # results go out but never arrive
     mic, clock = microphone(session, two_laughs)
-    clock.t += 8_000
-    mic.pump()
+    clock.play(mic, 8_000)
     wait_for(lambda: any(m["event"]["phase"] == "FINAL" for m in server_session.log), "the server's FINAL")
     session.poll()
     assert session.view.events == {}

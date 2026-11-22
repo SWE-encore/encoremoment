@@ -39,8 +39,7 @@ def test_end_during_a_reaction_delivers_its_final_before_closing(server, relay, 
     session = start(app, relay, "ses-r11-end-open")
     server_session = app.sessions["ses-r11-end-open"]
     mic, clock = microphone(session, laugh_in_progress)
-    clock.t += 4_000
-    mic.pump()
+    clock.play(mic, 4_000)
     wait(session, lambda: session.open_events == ["evt-0001"])
 
     session.finish()
