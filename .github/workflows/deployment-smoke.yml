@@ -27,6 +27,18 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
+      - name: Check startup and readiness probes on the rendered Kubernetes configurations
+        run: |
+          set -euo pipefail
+          for config in deploy/k8s deploy/k8s-history; do
+            kubectl kustomize "$config" | ruby -ryaml -e '
+              resources = YAML.load_stream(STDIN.read)
+              deployment = resources.find { |r| r["kind"] == "Deployment" && r.dig("metadata", "name") == "encore-server" }
+              server = deployment.fetch("spec").fetch("template").fetch("spec").fetch("containers").find { |c| c["name"] == "server" }
+              {"startupProbe" => "/livez", "livenessProbe" => "/livez", "readinessProbe" => "/readyz"}.each do |probe, path|
+                abort "#{probe} must use #{path}" unless server.dig(probe, "httpGet", "path") == path
+              end'
+          done
       - name: Build the fixture, retry a reaction, and read it after restart
         shell: bash
         run: |

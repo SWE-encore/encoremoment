@@ -85,3 +85,34 @@ def test_events_are_mapped_to_time_since_start():
     assert pb["title"] == MIC_CLOCK_TITLE
     # the loud part starts 3 s after Start; the 0.975 s window may open slightly earlier
     assert 2_000 <= pb["timecode_start_ms"] <= 3_500
+
+
+@pytest.mark.parametrize("no_player", [False, True])
+def test_live_cli_connects_microphone_to_the_selected_player(monkeypatch, no_player):
+    from unittest.mock import Mock
+
+    from encore_client.__main__ import main
+    from encore_client.sensing import live_mic
+
+    # Drive the real CLI and sensor assembly without opening Qt windows or a device.
+    workspace = Mock()
+    workspace.recorder = None
+    player_window = Mock()
+    widgets = Mock()
+    widgets.QApplication.instance.return_value.exec.return_value = 0
+    for name, module in {
+        "PySide6.QtCore": Mock(),
+        "PySide6.QtWidgets": widgets,
+        "encore_client.ui.workspace": Mock(Workspace=Mock(return_value=workspace)),
+        "encore_client.player.window": Mock(PlayerWindow=Mock(return_value=player_window)),
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    audio_input = Mock()
+    monkeypatch.setattr(live_mic, "QtAudioInput", audio_input)
+
+    assert main(["--mic", *(["--no-player"] if no_player else [])]) == 0
+    source = audio_input.call_args.args[0]
+    assert source.player is (None if no_player else player_window.player)
+    assert source.aec_status == ("off" if no_player else "reference_unavailable")
+    assert workspace.live_microphone is source
+    assert workspace.add_microphone.call_args.args[0].device is audio_input.return_value
