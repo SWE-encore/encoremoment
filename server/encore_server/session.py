@@ -105,8 +105,8 @@ class ServerSession:
                 camera_generation, image_ms, rgb, data = unpack_pair(data)
                 if camera_generation != self._camera_generation():
                     raise ValueError("stale camera")
-                if self.face_model is None:
-                    rgb = None  # audio inference also works on a server without a face model
+                if self.face_model is None or self.view.camera_generation_at(image_ms) != camera_generation:
+                    rgb = None  # independently admitted microphone audio is still usable
             header, pcm = decode_audio_frame(data)
         except ValueError:
             self.invalid += 1
@@ -132,10 +132,10 @@ class ServerSession:
             started = time.monotonic()
             scores = self.model(w.pcm)
             audio_ms = round((time.monotonic() - started) * 1000, 1)
+            center = (w.start_ms + w.end_ms) // 2
             frame = Frame(w.start_ms, w.end_ms, scores, self.baseline.strength(rms_db(w.pcm)),
-                          w.generation, self._camera_generation(), w.aec)
-            if self.tab_rules and frame.camera is not None:
-                center = (w.start_ms + w.end_ms) // 2
+                          w.generation, self.view.camera_generation_at(center), w.aec)
+            if self.tab_rules and frame.camera is not None and frame.camera == self._camera_generation():
                 grace = 0
                 raw = frame.scores.get("laughter", 0)
                 if self.pending_face and self.tab_rules.assisted_audio * self.tab_rules.release_ratio <= raw < self.tab_rules.strong_audio:

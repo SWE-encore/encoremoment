@@ -35,7 +35,7 @@ def test_event_capture_pairs_current_camera_and_falls_back_to_audio():
     pcm = bytes(16_000)
     assert s.send_audio(pcm, 500)
     assert not created
-    s.set_sensor("camera", True)
+    s.set_sensor("camera", True, capture_ms=1000)
     assert s.send_audio(pcm, 1000)
     gen, when, rgb, audio = unpack_pair(packets[-1])
     assert (gen, when, rgb, decode_audio_frame(audio)[1]) == (1, 1120, image, pcm)
@@ -48,6 +48,43 @@ def test_event_capture_pairs_current_camera_and_falls_back_to_audio():
     assert server.audio_chunks == 4 and server.invalid == 0
     s._on_message(json.dumps({"kind": "demo_scores", "laughter": .1}))
     assert not s.view.rejected
+
+
+def test_camera_image_belongs_to_one_audio_interval_and_one_connection():
+    now = [1000]
+    s = Session("ws://unused", "ses-sync", clock=lambda: now[0])
+    packets = []
+
+    class Link:
+        def send(self, data):
+            if isinstance(data, bytes):
+                packets.append(data)
+            return True
+
+    s._transport = Link()
+    s._on_open()
+    s.set_sensor("microphone", True)
+    s.set_sensor("camera", True)
+    image_ms = 1500
+    rgb = bytes(RGB_BYTES)
+    s.camera_frame = lambda: (1, image_ms, rgb)
+    pcm = bytes(16_000)
+
+    def send(start):
+        assert s.send_audio(pcm, start)
+        return unpack_pair(packets[-1])[1] if packets[-1].startswith(b"EMV1") else None
+
+    assert send(1000) is None          # end boundary is in the next chunk
+    assert send(1500) == 1500
+    assert send(1500) is None          # overlapping capture timestamps
+    image_ms = 2350
+    assert send(1800) is None          # this image is still in the future
+    s._set_state(Conn.DISCONNECTED)
+    now[0] = 2400
+    s._on_open()                       # latest frame was captured while offline
+    assert send(2300) is None
+    image_ms = 2400
+    assert send(2300) == 2400
 
 
 def test_workspace_routes_accepted_event_and_timeline_playback(tmp_path, monkeypatch):
