@@ -7,7 +7,7 @@ One top-level Gst.Pipeline decodes a local file:
                              ! volume ! webrtcechoprobe (if installed) ! audio sink
 
 The audio branch runs at 48 kHz through webrtcechoprobe so the echo
-canceller (R1) can later be added as a microphone branch of this same
+canceller (R1) can process microphone blocks inside this same
 pipeline, which the probe requires (Submission B, Requirement 1). Without
 the probe the player still plays and reports the reference as unavailable.
 The probe sits after the volume control so the reference matches what the
@@ -32,6 +32,7 @@ from gi.repository import Gst  # noqa: E402
 
 from ..clock import monotonic_ms  # noqa: E402
 from .anchors import AnchorTracker, content_identity  # noqa: E402
+from .echo import EchoFilter  # noqa: E402
 
 Gst.init(None)
 
@@ -70,6 +71,10 @@ class PlayerPipeline:
         self.tracker = AnchorTracker(session_id, on_anchor, clock)
         self.clock = clock
         self.audio_sink_desc = audio_sink
+        self.probe_name = f"encore_echo_{id(self):x}"
+        self._echo = None
+        self._reference_end_ns = None
+        self._echo_failed = False
         self.heartbeat_ms = heartbeat_ms
         self.echo_reference = "available" if echo_probe_available() else "unavailable"
         self.pipeline: Gst.Pipeline | None = None
@@ -110,6 +115,7 @@ class PlayerPipeline:
             self.error = "could not start the pipeline"
 
     def close(self) -> None:
+        self.reset_echo()
         if self.pipeline is not None:
             self.pipeline.set_state(Gst.State.NULL)
         self.pipeline = None
@@ -130,6 +136,7 @@ class PlayerPipeline:
         if self.pipeline is None:
             return
         self.want_playing = False
+        self.reset_echo()
         self.pipeline.set_state(Gst.State.PAUSED)
 
     def toggle(self) -> None:
@@ -143,6 +150,7 @@ class PlayerPipeline:
         position_ms = max(0, int(position_ms))
         if duration:
             position_ms = min(position_ms, duration)
+        self.reset_echo()
         ok = self.pipeline.seek(
             self.rate,
             Gst.Format.TIME,
@@ -164,6 +172,7 @@ class PlayerPipeline:
             return False
         if rate == self.rate:
             return True
+        self.reset_echo()
         instant = self.pipeline.seek(
             rate,
             Gst.Format.TIME,
@@ -238,6 +247,8 @@ class PlayerPipeline:
             self.want_playing = False
             if self.pipeline is not None:
                 self.pipeline.set_state(Gst.State.PAUSED)
+        elif t == Gst.MessageType.CLOCK_LOST:
+            self.reset_echo()
         elif t == Gst.MessageType.EOS:
             self.eos = True
             self.want_playing = False
@@ -271,7 +282,7 @@ class PlayerPipeline:
                 "appsink name=video_out sync=true max-buffers=1 drop=true emit-signals=false enable-last-sample=true"
             )
         elif kind == "audio" and not self.has_audio:
-            probe = "webrtcechoprobe name=echo_probe ! " if self.echo_reference == "available" else ""
+            probe = f"webrtcechoprobe name={self.probe_name} ! " if self.echo_reference == "available" else ""
             desc = (
                 f"queue ! audioconvert ! audioresample ! {AUDIO_CAPS} ! "
                 f"volume name=volume ! {probe}{self.audio_sink_desc}"
@@ -279,6 +290,8 @@ class PlayerPipeline:
         else:
             desc = "fakesink async=false sync=false"
         branch = Gst.parse_bin_from_description(desc, True)
+        if kind == "audio" and (probe_element := branch.get_by_name(self.probe_name)) is not None:
+            probe_element.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, self._reference_buffer)
         self.pipeline.add(branch)
         branch.sync_state_with_parent()
         if pad.link(branch.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
@@ -288,6 +301,48 @@ class PlayerPipeline:
             self.has_video, self._appsink = True, branch.get_by_name("video_out")
         elif kind == "audio" and not self.has_audio:
             self.has_audio, self._volume = True, branch.get_by_name("volume")
+
+    def _reference_buffer(self, pad, info):
+        buffer = info.get_buffer()
+        event = pad.get_sticky_event(Gst.EventType.SEGMENT, 0)
+        if event is not None and buffer is not None and buffer.pts != Gst.CLOCK_TIME_NONE:
+            segment = event.parse_segment()
+            duration = buffer.duration if buffer.duration != Gst.CLOCK_TIME_NONE else 0
+            end_ns = segment.to_running_time(Gst.Format.TIME, buffer.pts + duration)
+            if end_ns != Gst.CLOCK_TIME_NONE:
+                self._reference_end_ns = end_ns
+        return Gst.PadProbeReturn.OK
+
+    def reset_echo(self):
+        if self._echo is not None:
+            self._echo.close()
+            self._echo = None
+        self._reference_end_ns = None
+        self._echo_failed = False
+
+    def cancel_echo(self, pcm, capture_ms):
+        """Filter complete mono 48 kHz blocks on the PC capture clock."""
+        pipeline = self.pipeline
+        clock = pipeline.get_clock() if pipeline is not None else None
+        if not self.want_playing or self.eos or clock is None or self._reference_end_ns is None:
+            if self._echo is not None:
+                self.reset_echo()
+            return pcm, "reference_unavailable"
+        now_ns = clock.get_time() - pipeline.get_base_time()
+        pts = now_ns - (self.clock() - capture_ms) * Gst.MSECOND
+        if pts < 0 or not -250 * Gst.MSECOND <= self._reference_end_ns - pts <= 500 * Gst.MSECOND:
+            self.reset_echo()
+            return pcm, "reference_unavailable"
+        if self._echo_failed:
+            return pcm, "reference_unavailable"
+        try:
+            if self._echo is None:
+                self._echo = EchoFilter(pipeline, self.probe_name)
+            return self._echo.process(pcm, pts)
+        except RuntimeError:
+            self.reset_echo()
+            self._echo_failed = True
+            return pcm, "reference_unavailable"
 
     def _pull_frame(self) -> Frame | None:
         sink = self._appsink
