@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
@@ -55,20 +56,48 @@ class PostgresHistory:
 
 
 class SessionArchive:
-    """Advance through a session's live log only after its FINALs are durable.
-
-    The caller holds the session lock across each flush, including reconnect replay.
-    """
-    def __init__(self, store: PostgresHistory) -> None:
+    """Archive immutable live-log entries without making device controls wait for SQL."""
+    def __init__(self, store: PostgresHistory, say=lambda line: None) -> None:
         self.store = store
+        self.say = say
         self._cursors: dict[str, int] = {}
+        self._writers: dict[str, asyncio.Task] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def notify(self, session: ServerSession, messages: list[dict]) -> None:
+        sid = session.session_id
+        if sid not in self._writers and any(
+            msg.get("event", {}).get("phase") == "FINAL" for msg in messages
+        ):
+            self._writers[sid] = asyncio.create_task(self._retry(session))
+
+    async def _retry(self, session: ServerSession) -> None:
+        sid = session.session_id
+        delay = 1
+        try:
+            while self._cursors.get(sid, 0) < len(session.log):
+                try:
+                    await self.flush(session)
+                    delay = 1
+                except HistoryUnavailable:
+                    self.say(f"{sid}: history unavailable; retrying in {delay}s")
+                    await asyncio.sleep(delay)
+                    delay = min(30, delay * 2)
+        finally:
+            self._writers.pop(sid, None)
+
+    async def stop(self) -> None:
+        writers = list(self._writers.values())
+        for task in writers:
+            task.cancel()
+        await asyncio.gather(*writers, return_exceptions=True)
 
     async def flush(self, session: ServerSession) -> None:
         sid = session.session_id
-        pending = session.results_after(self._cursors.get(sid, 0))
-        if not pending:
-            return
-        finals = [msg["event"] for msg in pending if msg["event"]["phase"] == "FINAL"]
-        if finals:
-            await self.store.save(sid, finals)
-        self._cursors[sid] = pending[-1]["cursor"]
+        async with self._locks.setdefault(sid, asyncio.Lock()):
+            pending = session.results_after(self._cursors.get(sid, 0))
+            if pending:
+                finals = [msg["event"] for msg in pending if msg["event"]["phase"] == "FINAL"]
+                if finals:
+                    await self.store.save(sid, finals)
+                self._cursors[sid] = pending[-1]["cursor"]
