@@ -392,7 +392,9 @@ class BenchWindow(QMainWindow):
                 self._begin()
             if isinstance(self.source, WavMicrophone) and self._began and self.running:
                 self.source.pump()
-                if self.source.done:
+                # A mic-off control discards queued audio. Let the final file chunk
+                # reach the writer before automatically stopping at EOF.
+                if self.source.done and not s.media_pending:
                     self.stop()
             if self._stop_at is not None and time.monotonic() >= self._stop_at:
                 self._finish()

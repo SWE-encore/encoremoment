@@ -129,6 +129,8 @@ class SessionPanel(QWidget):
 def status_text(s: Session) -> str:
     """The connection line. A drop is never shown as recovered until the stream is open again (R11)."""
     text = STATUS[s.state][1]
+    if s.state is Conn.CONNECTED and s.stale:
+        return f"{text} — catching up with server results"
     if s.state is Conn.DISCONNECTED:
         text += f": {s.reason}."
         if s.retry_in_ms is not None:
