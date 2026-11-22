@@ -54,6 +54,8 @@ class Clip:
     thumbnail: str | None = None
     temp_paths: tuple[str, ...] = ()
 
+    trim_ms: tuple[int, ...] = ()  # Default playback excludes the retained editing handles.
+
     @classmethod
     def from_dict(cls, d: dict) -> "Clip":
         return cls(
@@ -70,6 +72,7 @@ class Clip:
             part=int(d.get("part", 0)),
             thumbnail=d.get("thumbnail"),
             temp_paths=tuple(d.get("temp_paths", ())),
+            trim_ms=tuple(d.get("trim_ms", ())),
         )
 
 

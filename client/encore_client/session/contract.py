@@ -36,6 +36,7 @@ _contract = _load()
 
 SCHEMA = "encore.v1"
 SessionView = _contract.SessionView
+clip_windows = _contract.clip_windows
 PC_TO_SERVER = _contract.PC_TO_SERVER
 SERVER_TO_PC = _contract.SERVER_TO_PC
 AUDIO_RATE = _contract.AUDIO_RATE

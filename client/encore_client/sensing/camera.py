@@ -10,10 +10,8 @@ Specifications IV-E (Camera Activation) and IV-F (Camera Indication):
   gate first, then asks the media layer to clean up;
 - every on/off is reported to the server with ``Session.set_sensor``.
 
-The *media* side (opening the real camera with GStreamer, the disk ring
-buffer, clip jobs) belongs to the media layer and implements ``CameraDevice``.
-Until that exists, the app runs without a camera device and shows the camera
-as unavailable; tests use a fake device.
+The GStreamer camera, disk ring and clip export implement ``CameraDevice``
+in ``clips.recorder``. Tests can substitute a fake device.
 
 Threading: call every method here, including the device callbacks, on the
 UI (Qt main) thread, as the player does with its GStreamer bus ``poll()``.

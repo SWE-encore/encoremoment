@@ -28,6 +28,9 @@ class ClipPanel(QWidget):
         self.player = QMediaPlayer(self)
         self.player.setAudioOutput(self.audio)
         self.player.setVideoOutput(self.video)
+        self._play_range = ()
+        self.player.mediaStatusChanged.connect(self._loaded)
+        self.player.positionChanged.connect(self._limit_playback)
         self.player.errorOccurred.connect(lambda _error, message: self.detail.setText(message))
         self.list.currentRowChanged.connect(self.select)
         self.play_button.clicked.connect(self.play)
@@ -121,8 +124,21 @@ class ClipPanel(QWidget):
             self.detail.setText(f"Clip file is missing: {path.name}")
             return
         self.detail.setText(f"Playing {path.name}")
-        self.player.setSource(QUrl.fromLocalFile(str(path)))
+        target = path.resolve()
+        selected = next((c for c in self.clips if playable_path(c, self.index_path.parent) == target), None)
+        self._play_range = selected.trim_ms if selected else ()
+        self.player.setSource(QUrl.fromLocalFile(str(target)))
+        if self._play_range:
+            self.player.setPosition(self._play_range[0])
         self.player.play()
+
+    def _loaded(self, state):
+        if state == QMediaPlayer.MediaStatus.LoadedMedia and self._play_range:
+            self.player.setPosition(self._play_range[0])
+
+    def _limit_playback(self, position):
+        if self._play_range and position >= self._play_range[1]:
+            self.player.stop()
 
     def play(self):
         clip = self.selected()
@@ -130,8 +146,7 @@ class ClipPanel(QWidget):
         if path is None:
             self.reload()
             return
-        self.player.setSource(QUrl.fromLocalFile(str(path)))
-        self.player.play()
+        self.play_file(path)
 
     # ---- deletion (R7) ----------------------------------------------------------------
 
