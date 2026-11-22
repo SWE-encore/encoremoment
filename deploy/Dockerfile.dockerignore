@@ -1,0 +1,17 @@
+**
+!contracts/
+!contracts/reference/
+!contracts/reference/encore_contract.py
+!contracts/schema/
+!contracts/schema/messages.schema.json
+!contracts/samples/
+!contracts/samples/07_microphone_audio.json
+!deploy/
+!deploy/start-server.sh
+!deploy/smoke.py
+!deploy/models/
+!deploy/models/requirements-face.txt
+!server/
+!server/requirements*.txt
+!server/encore_server/
+!server/encore_server/*.py

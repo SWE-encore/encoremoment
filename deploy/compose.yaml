@@ -1,0 +1,38 @@
+name: encore
+services:
+  server:
+    image: ${ENCORE_IMAGE:-encoremoment-server:fixture}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: ${ENCORE_BUILD_TARGET:-fixture}
+    environment:
+      ENCORE_MODEL: ${ENCORE_MODEL:-loudness}
+      ENCORE_MANIFEST_SHA256: ${ENCORE_MANIFEST_SHA256:-}
+      ENCORE_HISTORY: ${ENCORE_HISTORY:-0}
+      ENCORE_HISTORY_OUTBOX: /var/lib/encore/history-outbox.sqlite3
+      DATABASE_URL: ${DATABASE_URL:-}
+    ports:
+      - "127.0.0.1:${ENCORE_PORT:-8876}:8765"
+    volumes:
+      - history-outbox:/var/lib/encore
+      - type: bind
+        source: ${ENCORE_MODEL_BUNDLE:-./models}
+        target: /bundle
+        read_only: true
+        bind:
+          create_host_path: false
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8765/readyz', timeout=6).close()"]
+      start_period: 120s
+      interval: 10s
+      timeout: 8s
+      retries: 3
+volumes:
+  history-outbox:

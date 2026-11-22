@@ -63,9 +63,9 @@ class YamnetModel:
         return {r: float(frame[idx].max()) for r, idx in self._index.items()}
 
 
-def load_model(name: str):
+def load_model(name: str, *, yamnet_path: str | None = None):
     if name == "yamnet":
-        return YamnetModel()
+        return YamnetModel(handle=yamnet_path or YAMNET_HANDLE)
     if name == "loudness":
         return LoudnessModel()
     raise ValueError(f"unknown model {name!r}; use yamnet or loudness")

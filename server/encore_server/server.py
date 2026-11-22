@@ -110,6 +110,15 @@ class EncoreServer:
 
     async def check_path(self, connection, request):
         path = urlsplit(request.path).path
+        if path in ("/readyz", "/livez"):
+            if self.face_model is not None and not getattr(self.face_model, "ready", True):
+                return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "Face worker unavailable\n")
+            if path == "/readyz" and self.archive is not None:
+                try:
+                    await self.archive.check()
+                except HistoryUnavailable:
+                    return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "History unavailable\n")
+            return connection.respond(HTTPStatus.OK, "OK\n")
         history_route = HISTORY_PATH.fullmatch(path)
         if self.archive is not None and history_route:
             sid = history_route.group(1)
