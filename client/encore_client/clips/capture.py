@@ -28,8 +28,9 @@ class GstCamera:
         # Both branches share this camera and clock. Only the small RGB branch
         # drops stale samples. Dropping encoded buffers would damage a fragment.
         self.pipeline = Gst.parse_launch(
-            f"{source} name=camera ! videoconvert ! videoscale ! videorate drop-only=true ! "
-            "video/x-raw,format=I420,width=640,height=360,framerate=10/1 ! tee name=t "
+            f"{source} name=camera ! decodebin ! videoconvert ! videoscale ! "
+            "videorate drop-only=true max-rate=10 ! "
+            "video/x-raw,format=I420,width=640,height=360,framerate=(fraction)[1/1,10/1] ! tee name=t "
             "t. ! queue ! vp8enc deadline=1 keyframe-max-dist=10 target-bitrate=600000 ! "
             "splitmuxsink name=ring max-size-time=1000000000 send-keyframe-requests=true "
             "async-finalize=true muxer-factory=webmmux "

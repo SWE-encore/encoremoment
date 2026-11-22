@@ -142,13 +142,26 @@ def test_interrupted_capture_cleanup_and_active_owner(tmp_path):
     assert load_index(dev.index)[0].status is ClipStatus.UNAVAILABLE
 
 
-def test_native_camera_audio_clip_decodes_and_persists(tmp_path):
+@pytest.mark.parametrize("camera_mode", ["raw", "mjpeg_5fps"])
+def test_native_camera_audio_clip_decodes_and_persists(tmp_path, monkeypatch, camera_mode):
     pytest.importorskip("gi")
     from encore_client.clips.capture import gst
     Gst = gst()
     if not all(Gst.ElementFactory.find(name) for name in
                ("videotestsrc", "splitmuxsink", "vp8enc", "vp8dec", "webmmux", "opusenc", "opusdec")):
         pytest.skip("GStreamer media plugins unavailable")
+    if camera_mode == "mjpeg_5fps":
+        if not all(Gst.ElementFactory.find(name) for name in ("jpegenc", "jpegdec")):
+            pytest.skip("GStreamer JPEG plugins unavailable")
+        native_launch = Gst.parse_launch
+
+        def compressed_camera(description):
+            # Some webcams expose compressed frames and only five frames per second.
+            description = description.replace("videotestsrc name=camera",
+                "videotestsrc name=camera ! video/x-raw,framerate=5/1 ! jpegenc")
+            return native_launch(description)
+
+        monkeypatch.setattr(Gst, "parse_launch", compressed_camera)
     session = Session()
     index = tmp_path / "native.json"
     dev = DesktopRecorder(index, session, camera_factory=lambda d: GstCamera(d, source="videotestsrc"))
