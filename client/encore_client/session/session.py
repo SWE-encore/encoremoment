@@ -45,6 +45,7 @@ import queue
 import re
 import secrets
 import socket
+import struct
 import threading
 import time
 from collections import deque
@@ -346,6 +347,8 @@ class Session:
         self._clock = clock
         self._factory = transport_factory
         self._transport: Transport | None = None
+        self.camera_frame: Callable[[], tuple[int, int, bytes] | None] | None = None
+        self._last_camera_frame: tuple[int, int] | None = None
         self._gap_since_ms: int | None = None
 
     # ---- user actions ----------------------------------------------------------
@@ -509,9 +512,25 @@ class Session:
         if not mic.enabled or header.get("generation") != mic.generation:
             return False
         frame = encode_audio_frame(header, pcm)
+        camera = self.view.sensors["camera"]
+        paired = None
+        if self.state is Conn.CONNECTED and camera.enabled and self.camera_frame is not None:
+            captured = self.camera_frame()
+            if captured is not None:
+                generation, image_ms, rgb = captured
+                offset = (image_ms - header["capture_ms"]) * header["sample_rate"]
+                if (0 <= offset < header["samples"] * 1000
+                        and generation == camera.generation == self.view.camera_generation_at(image_ms)
+                        and (self.state_since_ms is None or image_ms >= self.state_since_ms)
+                        and (self._last_camera_frame is None or (generation, image_ms) > self._last_camera_frame)
+                        and len(rgb) == 320 * 180 * 3):
+                    frame = b"EMV1" + struct.pack("!IQ", generation, image_ms) + rgb + frame
+                    paired = (generation, image_ms)
         ok = self.state is Conn.CONNECTED and self._transport is not None
         ok = ok and self._transport.send(frame)
         if ok:
+            if paired is not None:
+                self._last_camera_frame = paired
             self.view.receive("pc->server", header)
             self.audio_sent += 1
             self.log.write("out", msg=header)
@@ -703,6 +722,9 @@ class Session:
         if not isinstance(msg, dict):
             self.bad_messages += 1
             self.log.write("in_bad", text=text[:200])
+            return
+        if msg.get("kind") == "demo_scores":
+            # Per-window diagnostics from a multimodal server are not contract events.
             return
         self.log.write("in", msg=msg)
         self.view.receive("server->pc", msg)

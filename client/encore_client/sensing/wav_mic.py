@@ -33,6 +33,7 @@ class WavMicrophone:
         *,
         chunk_ms: int = CHUNK_MS,
         clock: Callable[[], int] = monotonic_ms,
+        on_pcm: Callable[[bytes, int], None] | None = None,
     ) -> None:
         with wave.open(str(path), "rb") as wav:
             fmt = (wav.getframerate(), wav.getnchannels(), wav.getsampwidth(), wav.getcomptype())
@@ -52,6 +53,7 @@ class WavMicrophone:
         self.pos = 0  # bytes of pcm already captured
         self.sent = 0
         self._clock = clock
+        self.on_pcm = on_pcm
         self._run: tuple[int, int, int] | None = None  # (generation, start ms, start pos)
 
     @property
@@ -75,6 +77,8 @@ class WavMicrophone:
             if now < capture_ms + _ms(len(data)):
                 break
             # Captured either way: audio from a dropped connection is lost, as with a real microphone.
+            if self.on_pcm is not None:
+                self.on_pcm(data, capture_ms)
             if self.session.send_audio(data, capture_ms, aec="off"):
                 sent += 1
             self.pos += len(data)

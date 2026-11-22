@@ -24,10 +24,10 @@ class PairedDemo(unittest.TestCase):
         self.control("microphone", True, 1)
         self.control("camera", True, 1)
 
-    def control(self, sensor, enabled, generation):
+    def control(self, sensor, enabled, generation, capture_ms=0):
         result = self.session.on_text(json.dumps(dict(schema="encore.v1", session_id="demo",
             kind="control_update", sensor=sensor, generation=generation, enabled=enabled,
-            seq=generation, capture_ms=0, idempotency_key=f"{sensor}-{generation}")))
+            seq=generation, capture_ms=capture_ms, idempotency_key=f"{sensor}-{generation}")))
         self.assertEqual(result[0]["status"], "applied")
 
     def packet(self, index, *, paired=True, generation=1, shift=0):
@@ -131,6 +131,14 @@ class PairedDemo(unittest.TestCase):
         for i in range(4):
             self.packet(i, shift=5000)
         self.assertFalse(self.session.log)
+
+    def test_reenabled_camera_does_not_admit_a_frame_captured_while_off(self):
+        self.control("camera", False, 2, capture_ms=1000)
+        self.control("camera", True, 3, capture_ms=1800)
+        self.packet(2, generation=3)  # the frame was captured at 1499 ms
+        self.assertEqual((self.session.audio_chunks, self.session.face_frames), (1, 0))
+        self.packet(3, generation=3)  # captured at 1999 ms
+        self.assertEqual((self.session.audio_chunks, self.session.face_frames), (2, 1))
 
     def test_strong_audio_while_vision_blocked(self):
         started, release = threading.Event(), threading.Event()

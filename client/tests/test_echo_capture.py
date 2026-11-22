@@ -35,8 +35,8 @@ class RawTrackTest(unittest.TestCase):
         ends = []
         clock = iter((origin + prior_ms + 10, origin + prior_ms + 20))
         capture = object.__new__(QtAudioInput)
-        capture.mic = SimpleNamespace(session=session, player=None, _clock=lambda: next(clock),
-                                      feed=lambda pcm, end_ms: ends.append(end_ms))
+        capture.mic = LiveMicrophone(session, clock=lambda: next(clock))
+        capture.mic.feed = lambda pcm, end_ms: ends.append(end_ms)
         capture._io = SimpleNamespace(readAll=lambda: SimpleNamespace(data=lambda: device_block))
         capture.format = SimpleNamespace(bytesPerFrame=lambda: frame_bytes, sampleRate=lambda: rate,
                                          durationForBytes=duration_for_bytes)

@@ -133,6 +133,15 @@ class SessionView:
     ignored: Counter = field(default_factory=Counter)
     rejected: Counter = field(default_factory=Counter)
 
+    def camera_generation_at(self, capture_ms: int) -> int | None:
+        """Camera consent at a timestamp on the PC capture clock."""
+        for interval in reversed(self.camera_intervals):
+            if interval.on_ms <= capture_ms:
+                if interval.off_ms is None or capture_ms < interval.off_ms:
+                    return interval.generation
+                break
+        return None
+
     # ---- entry point -------------------------------------------------------
 
     def receive(self, direction: str, msg: dict[str, Any]) -> None:
