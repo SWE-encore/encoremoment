@@ -30,6 +30,10 @@ class FaceWorker:
             self.close()
             raise RuntimeError("Face Landmarker failed to start")
 
+    @property
+    def ready(self):
+        return self.process.poll() is None
+
     def __call__(self, rgb):
         with self.lock:
             self.process.stdin.write(rgb)
