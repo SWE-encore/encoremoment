@@ -96,12 +96,13 @@ client/
 samples/                    Synthetic videos and sample index for the clip UI
 scripts/                    Sample regeneration, test bench launcher and app-menu shortcut
 documents/                  Submission sources, PDFs, and source archives
-docs/                       Current architecture and integration decisions
+docs/                       Current architecture, integration decisions and the R1-R11 acceptance record
 .github/                    PR template and Ubuntu CI
 artifacts/                  Local run outputs, excluded from version control
 ```
 
 See [architecture.md](docs/architecture.md) for the current data flow and boundaries for future work.
+The [R1–R11 acceptance record](docs/em-28-acceptance.md) lists what `main` passes today, with commands, and what is still open by owner.
 `server/` is a first session server: sessions in memory, YAMNet in the same process. Its README lists what is not done yet.
 `inference/` is a planned component required by the design, **not an implemented service**.
 The [EC2 model setup](deploy/models/README.md) installs YAMNet and MediaPipe Face Landmarker
