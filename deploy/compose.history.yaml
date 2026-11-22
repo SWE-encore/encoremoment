@@ -1,0 +1,25 @@
+services:
+  server:
+    depends_on:
+      history:
+        condition: service_healthy
+    environment:
+      ENCORE_HISTORY: "1"
+      DATABASE_URL: postgresql://encore_test@history:5432/encore_test
+      PGPASSWORD: ${ENCORE_TEST_DB_PASSWORD:?set a password for the disposable test database}
+  history:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: encore_test
+      POSTGRES_USER: encore_test
+      POSTGRES_PASSWORD: ${ENCORE_TEST_DB_PASSWORD:?set a password for the disposable test database}
+    volumes:
+      - history-data:/var/lib/postgresql/data
+      - ../server/sql/001_reaction_events.sql:/docker-entrypoint-initdb.d/001_reaction_events.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "encore_test", "-d", "encore_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+volumes:
+  history-data:

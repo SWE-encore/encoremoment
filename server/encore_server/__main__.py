@@ -13,8 +13,34 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import signal
 import sys
 from .fusion import TabRules
+
+
+async def _serve(app, args):
+    """Let container SIGTERM unwind the listener, connections and archive retry jobs."""
+    loop = asyncio.get_running_loop()
+    if sys.platform == "win32":
+        await app.run(args.host, args.port, unix_socket=args.unix_socket)
+        return
+    task = asyncio.current_task()
+    stopping = False
+
+    def terminate():
+        nonlocal stopping
+        if not stopping:
+            stopping = True
+            task.cancel()
+
+    loop.add_signal_handler(signal.SIGTERM, terminate)
+    try:
+        await app.run(args.host, args.port, unix_socket=args.unix_socket)
+    except asyncio.CancelledError:
+        if not stopping:
+            raise
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -23,6 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--model", choices=("yamnet", "loudness"), default="yamnet",
                     help="yamnet (needs TensorFlow) or loudness (a stand-in: any loud sound is laughter)")
     ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--yamnet-path", help="load a preverified YAMNet SavedModel directory offline")
     ap.add_argument("--record-history", action="store_true",
                     help="archive FINAL events in PostgreSQL using DATABASE_URL")
     ap.add_argument("--port", type=int, default=8765)
@@ -33,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--demo-quiet-ms", type=int, default=TabRules.quiet_ms,
                     help="time below the release thresholds before closing a shared-tab clip")
     args = ap.parse_args(argv)
+    if args.yamnet_path and args.model != "yamnet":
+        ap.error("--yamnet-path requires --model yamnet")
     if bool(args.face_python) != bool(args.face_task) or not 0 < args.smile_threshold <= 1:
         ap.error("supply both face options and a smile threshold in (0, 1]")
     if args.demo_quiet_ms <= 0:
@@ -60,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[server] {line}", flush=True)
 
     try:
-        model = load_model(args.model)
+        model = load_model(args.model, yamnet_path=args.yamnet_path)
     except ImportError as exc:
         ap.exit(2, f"cannot load {args.model}: {exc}\n"
                    "Install server/requirements-yamnet.txt, or use --model loudness to test without TensorFlow.\n")
@@ -73,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"with smile >= {args.smile_threshold:g} for {TabRules.equivalent_hops} equivalent hops in 5 s; quiet {args.demo_quiet_ms} ms")
         app = EncoreServer(model, say=say, face_model=face, history=history,
                            smile_threshold=args.smile_threshold, quiet_ms=args.demo_quiet_ms)
-        asyncio.run(app.run(args.host, args.port, unix_socket=args.unix_socket))
+        asyncio.run(_serve(app, args))
     except KeyboardInterrupt:
         pass
     finally:

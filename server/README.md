@@ -11,6 +11,8 @@ It is a first working server, not the full design: live sessions and replay curs
 
 ## Run
 
+For the containerized server, model verification, and an end-to-end retry smoke test, see the [Compose runbook](../deploy/README.md).
+
 The quickest way to try it is the test bench (`client/README.md`, "Test bench"): one window that runs this server inside the app and shows the model's scores live, with a microphone or an audio file.
 
 To run the server on its own, from the repository root, because the server loads `contracts/` from the checkout, like the client:

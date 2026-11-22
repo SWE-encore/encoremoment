@@ -1,0 +1,49 @@
+name: Server deployment smoke
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - deploy/**
+      - server/**
+      - contracts/**
+      - .github/workflows/deployment-smoke.yml
+  push:
+    branches: [main]
+    paths:
+      - deploy/**
+      - server/**
+      - contracts/**
+      - .github/workflows/deployment-smoke.yml
+
+permissions:
+  contents: read
+
+jobs:
+  compose-history:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the fixture, retry a reaction, and read it after restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ENCORE_TEST_DB_PASSWORD="$(openssl rand -hex 24)"
+          compose=(docker compose -f deploy/compose.yaml -f deploy/compose.history.yaml)
+          trap '"${compose[@]}" down --volumes' EXIT
+          "${compose[@]}" up --build --wait --wait-timeout 90
+          result=$("${compose[@]}" exec -T server python deploy/smoke.py)
+          printf '%s\n' "$result"
+          "${compose[@]}" restart server
+          "${compose[@]}" up --wait --wait-timeout 90
+          python3 - "$result" <<'PY'
+          import json, sys
+          from urllib.request import urlopen
+          fixture = json.loads(sys.argv[1])
+          url = f"http://127.0.0.1:8876/v1/sessions/{fixture['session_id']}/events"
+          with urlopen(url, timeout=10) as response:
+              events = json.load(response)["events"]
+          assert [ev["event_id"] for ev in events] == fixture["final_event_ids"], events
+          assert all(ev["phase"] == "FINAL" for ev in events), events
+          PY
