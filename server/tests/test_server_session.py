@@ -201,6 +201,25 @@ def test_camera_generation_is_recorded_when_on():
     assert opened["generations"] == {"microphone": 1, "camera": 1}
 
 
+def test_delayed_result_uses_camera_consent_at_the_capture_trigger():
+    # Two chunks form a 975 ms model window. Its trigger is at 1487 ms.
+    # Camera controls can reach the server before the second chunk does.
+    for toggles, expected in [
+        ([(True, 1750)], None),
+        ([(True, 1487)], 1),
+        ([(True, 1200), (False, 1487)], None),
+        ([(True, 1200), (False, 1488), (True, 1800)], 1),
+    ]:
+        s, pc = new_session(), Pc()
+        s.on_text(pc.control("microphone", True, 1))
+        s.on_audio(pc.audio(1, 1000, LOUD))
+        for generation, (enabled, capture_ms) in enumerate(toggles, 1):
+            s.on_text(pc.control("camera", enabled, generation, cap=capture_ms))
+        opened, = events(s.on_audio(pc.audio(1, 1500, LOUD)))
+        assert opened["capture"]["triggers_ms"] == [1487]
+        assert opened["generations"]["camera"] == expected
+
+
 def test_idle_and_end_close_open_events():
     clock = Clock()
     s, pc = new_session(clock=clock, idle_s=2.0), Pc()

@@ -25,10 +25,10 @@ def main(argv=None):
     parser.add_argument("--autoplay", action="store_true")
     parser.add_argument("--audio-sink", default="autoaudiosink")
     parser.add_argument("--mic-wav", type=Path, metavar="FILE.wav",
-                        help="stand-in microphone until capture exists: stream this mono 16 kHz "
+                        help="use a file as the microphone: stream this mono 16 kHz "
                              "16-bit WAV to the server while the session's microphone is on")
     parser.add_argument("--mic", action="store_true",
-                        help="capture the PC's default microphone (no echo cancellation; use headphones)")
+                        help="capture the PC's default microphone on Start")
     parser.add_argument("--local-server", choices=("loudness", "yamnet"),
                         help="start a session server inside the app with this model instead of using --server")
     parser.add_argument("--trigger", action="append", metavar="REACTION=LEVEL",
@@ -109,10 +109,15 @@ def main(argv=None):
         from PySide6.QtWidgets import QApplication, QDockWidget, QMainWindow
         from .ui.workspace import Workspace
         app = QApplication.instance() or QApplication(sys.argv[:1])
+        recorder_factory = None
+        if scenario is None and sys.platform.startswith("linux"):
+            from .clips.recorder import DesktopRecorder
+            recorder_factory = DesktopRecorder
         index_path = args.clip_index or (ROOT / "samples/clip_index.json" if args.demo
                                         else ROOT / "artifacts/clip_index.json")
         workspace = Workspace(session, driver, index_path,
-                              require_anchor=scenario is None and not mic_clock, demo=scenario is not None)
+                              require_anchor=scenario is None and not mic_clock, demo=scenario is not None,
+                              recorder_factory=recorder_factory)
         if args.no_player:
             win = QMainWindow()
             win.setCentralWidget(workspace)
@@ -143,23 +148,32 @@ def main(argv=None):
                     win.player.play()
         from .sensing.microphone import MicrophoneSwitch
         if mic is not None:
+            if workspace.recorder is not None:
+                mic.on_pcm = workspace.recorder.feed_audio
             workspace.sensing.setText(
                 f"Microphone: stand-in file {args.mic_wav.name} — no real capture")
             workspace.add_microphone(MicrophoneSwitch(session, None, source=f"file {args.mic_wav.name}"))
             mic_timer = QTimer(win)
             mic_timer.timeout.connect(mic.pump)
             mic_timer.start(50)
-        if args.mic:
+        if mic is None and (args.mic or scenario is None):
             from .sensing.live_mic import LiveMicrophone, QtAudioInput
+            source = LiveMicrophone(session, player=None if args.no_player else win.player, keep_s=0,
+                                    on_pcm=workspace.recorder.feed_audio if workspace.recorder else None)
             try:
-                qt_mic = QtAudioInput(LiveMicrophone(session))  # opened by the switch (R8)
-            except RuntimeError as exc:
-                parser.exit(2, f"--mic: {exc}\n")
-            where = f"built-in {local.model_name} server" if local else url
-            workspace.sensing.setText(
-                "No echo cancellation (aec: off): use headphones if anything else is playing\n"
-                f"Analysis: {where}" + (" · times are seconds since Start" if mic_clock else ""))
-            workspace.add_microphone(MicrophoneSwitch(session, qt_mic, source=qt_mic.device.description()))
+                qt_mic = QtAudioInput(source)  # opens only when microphone sensing is enabled
+            except (RuntimeError, ImportError) as exc:
+                session.microphone_on_start = False
+                workspace.sensing.setText(f"Microphone unavailable: {exc}")
+            else:
+                workspace.live_microphone = source
+                where = f"built-in {local.model_name} server" if local else url
+                workspace.sensing.setText(
+                    f"Start enables microphone analysis at {where}. "
+                    "Enable camera to record and share audience frames."
+                    + (" Times are seconds since Start." if mic_clock else ""))
+                workspace.sensing.setWordWrap(True)
+                workspace.add_microphone(MicrophoneSwitch(session, qt_mic, source=qt_mic.device.description()))
         app.aboutToQuit.connect(workspace.shutdown)
         win.show()
         return app.exec()
