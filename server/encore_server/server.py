@@ -53,7 +53,7 @@ class EncoreServer:
     ) -> None:
         """``on_frame(session_id, frame)``: every analysed frame, for debugging tools.
         It is called on a worker thread."""
-        self.archive = SessionArchive(history) if history is not None else None
+        self.archive = SessionArchive(history, say) if history is not None else None
         self.face_model = face_model
         self.smile_threshold = smile_threshold
         self.quiet_ms = quiet_ms
@@ -74,9 +74,25 @@ class EncoreServer:
         else:
             listener = serve(self.handler, host, port, **options)
             address = f"ws://{host}:{port}/v1/sessions/<session_id>/stream"
-        async with listener:
-            self.say(f"listening on {address}")
-            await asyncio.get_running_loop().create_future()  # until cancelled
+        try:
+            async with listener:
+                self.say(f"listening on {address}")
+                await asyncio.get_running_loop().create_future()  # until cancelled
+        finally:
+            await self.finish_history()
+
+    async def finish_history(self) -> None:
+        """After all WS handlers exit, finalize and drain known sessions on orderly stop."""
+        if self.archive is None:
+            return
+        await self.archive.stop()
+        for session in self.sessions.values():
+            for msg in session.end():
+                self._report(session.session_id, msg)
+            try:
+                await self.archive.flush(session)
+            except HistoryUnavailable:
+                self.say(f"{session.session_id}: terminating with unarchived FINALs; database unavailable")
 
     async def check_path(self, connection, request):
         path = urlsplit(request.path).path
@@ -84,6 +100,8 @@ class EncoreServer:
         if self.archive is not None and history_route:
             sid = history_route.group(1)
             try:
+                if sid in self.sessions:
+                    await self.archive.flush(self.sessions[sid])
                 events = await self.archive.store.for_session(sid)
             except HistoryUnavailable:
                 return connection.respond(HTTPStatus.SERVICE_UNAVAILABLE, "History temporarily unavailable\n")
@@ -120,8 +138,6 @@ class EncoreServer:
         self.say(f"{sid}: connected, {len(session.results_after(after))} result(s) to replay")
         try:
             async with lock:
-                if self.archive:
-                    await self.archive.flush(session)
                 replay = session.results_after(after)
             for msg in replay:
                 await ws.send(json.dumps(msg, ensure_ascii=False))
@@ -135,7 +151,7 @@ class EncoreServer:
                         else:
                             out = session.on_text(data)
                         if self.archive:
-                            await self.archive.flush(session)
+                            self.archive.notify(session, out)
                     for msg in out:
                         if msg["kind"] == "demo_scores":
                             windows += 1
@@ -144,9 +160,6 @@ class EncoreServer:
                                          f"smile={msg['smile']} faces={msg['faces_seen']}/{msg['face_frames']}")
                         self._report(sid, msg)
                         await ws.send(json.dumps(msg, ensure_ascii=False))
-        except HistoryUnavailable:
-            self.say(f"{sid}: history unavailable; pending results retained for reconnect")
-            await ws.close(1011, "History temporarily unavailable")
         except ConnectionClosed:
             pass
         finally:
@@ -154,13 +167,11 @@ class EncoreServer:
                 del self._active[sid]
                 if ws.close_code == 1000:
                     async with lock:
-                        for msg in session.end():
+                        final = session.end()
+                        for msg in final:
                             self._report(sid, msg)
                         if self.archive:
-                            try:
-                                await self.archive.flush(session)
-                            except HistoryUnavailable:
-                                self.say(f"{sid}: end-of-session history pending until reconnect")
+                            self.archive.notify(session, final)
                     self.say(f"{sid}: session ended")
                 else:
                     self.say(f"{sid}: connection dropped ({ws.close_code}); kept for a reconnect")
@@ -190,6 +201,7 @@ def serve_in_thread(app: EncoreServer, host: str = "127.0.0.1", port: int = 0):
             box["port"] = server.sockets[0].getsockname()[1]
             started.set()
             await server.wait_closed()
+        await app.finish_history()
 
     thread = threading.Thread(target=loop.run_until_complete, args=(main(),), name="encore-server", daemon=True)
     thread.start()

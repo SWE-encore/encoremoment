@@ -3,7 +3,8 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 from urllib.request import urlopen
 from uuid import uuid4
 
@@ -38,6 +39,82 @@ def test_archive_retries_failed_final_without_rearchiving_live_replay():
     assert session.results_after(1)[-1] == final
     asyncio.run(archive.flush(session))
     assert store.save.call_count == 2
+
+
+@pytest.mark.parametrize("close_with_open_event", [False, True])
+def test_outage_keeps_live_controls_and_retries_after_pc_end(close_with_open_event):
+    from websockets.exceptions import ConnectionClosedOK
+    from websockets.frames import Close
+    from encore_server.server import EncoreServer
+
+    async def scenario():
+        pc = Pc("ses-history-outage")
+        messages = [pc.control("microphone", True, 1)]
+        messages.extend(pc.audio(1, i * 500, LOUD) for i in range(3))
+        if not close_with_open_event:
+            messages.append(pc.control("microphone", False, 2, cap=1500))
+        ws = Mock()
+        ws.request = SimpleNamespace(path=f"/v1/sessions/{pc.sid}/stream")
+        ws.close_code = 1000
+        sent = []
+
+        async def receive():
+            if messages:
+                return messages.pop(0)
+            close = Close(1000, "")
+            raise ConnectionClosedOK(close, close, True)
+
+        async def send(data):
+            sent.append(json.loads(data))
+
+        ws.recv, ws.send = receive, send
+        failed, archived = asyncio.Event(), asyncio.Event()
+        store = Mock(spec=PostgresHistory)
+
+        async def save(sid, events):
+            if not failed.is_set():
+                failed.set()
+                raise HistoryUnavailable
+            assert sid == pc.sid
+            assert len(events) == 1 and events[0]["phase"] == "FINAL"
+            archived.set()
+
+        store.save.side_effect = save
+        app = EncoreServer(LoudnessModel(), history=store)
+
+        async def inline_model(fn, data):
+            return fn(data)
+
+        try:
+            # Isolate database and transport scheduling from the audio executor.
+            with patch("encore_server.server.asyncio.to_thread", inline_model):
+                await asyncio.wait_for(app.handler(ws), timeout=4)
+            assert any(m.get("event", {}).get("phase") == "OPEN" for m in sent)
+            if not close_with_open_event:
+                assert any(m.get("kind") == "control_ack" and m["generation"] == 2 for m in sent)
+                assert sent[-1]["event"]["phase"] == "FINAL"
+            await asyncio.wait_for(archived.wait(), timeout=4)
+            assert store.save.call_count == 2
+        finally:
+            await app.finish_history()
+        assert store.save.call_count == 2
+
+    asyncio.run(scenario())
+
+
+def test_orderly_stop_archives_an_open_reaction():
+    from encore_server.server import EncoreServer
+
+    store = Mock(spec=PostgresHistory)
+    app = EncoreServer(LoudnessModel(), history=store)
+    session = ServerSession("ses-history-stop", LoudnessModel())
+    app.sessions[session.session_id] = session
+    pc = Pc(session.session_id)
+    session.on_text(pc.control("microphone", True, 1))
+    stream(session, pc, 1, 0, [LOUD] * 3)
+    asyncio.run(app.finish_history())
+    final, = store.save.await_args.args[1]
+    assert final["phase"] == "FINAL" and final["event_id"] == session.log[0]["event"]["event_id"]
 
 
 @pytest.mark.skipif(not os.environ.get("ENCORE_TEST_DATABASE_URL"), reason="needs a dedicated PostgreSQL test DB")
