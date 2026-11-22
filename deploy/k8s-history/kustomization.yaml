@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../k8s
+  - outbox-pvc.yaml
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: encore-server
+      spec:
+        template:
+          spec:
+            containers:
+              - name: server
+                env:
+                  - {name: ENCORE_HISTORY, value: "1"}
+                  - {name: ENCORE_HISTORY_OUTBOX, value: /var/lib/encore/history-outbox.sqlite3}
+                  - name: DATABASE_URL
+                    valueFrom:
+                      secretKeyRef: {name: encore-history, key: database-url}
+                volumeMounts:
+                  - {name: history-outbox, mountPath: /var/lib/encore}
+            volumes:
+              - name: history-outbox
+                persistentVolumeClaim: {claimName: encore-history-outbox}

@@ -31,12 +31,6 @@ spec:
             - name: ENCORE_MANIFEST_SHA256
               valueFrom:
                 configMapKeyRef: {name: encore-model-release, key: manifest-sha256}
-            - name: ENCORE_HISTORY
-              valueFrom:
-                configMapKeyRef: {name: encore-model-release, key: record-history, optional: true}
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef: {name: encore-history, key: database-url, optional: true}
           resources:
             requests: {cpu: "1", memory: 2Gi, nvidia.com/gpu: "1"}
             limits: {memory: 4Gi, nvidia.com/gpu: "1"}
