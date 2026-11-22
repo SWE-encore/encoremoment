@@ -108,6 +108,7 @@ class DeletionManager:
         self.retry_ms = retry_ms
         self.journal_error: str | None = None
         self.ops: dict[str, Deletion] = {}
+        self._missing_journal = False
         self._stamp = object()
         self.version = 0                 # bumps on every change, for the UI
         self._next_retry_ms = 0
@@ -266,8 +267,13 @@ class DeletionManager:
         try:
             stat = self.journal.stat()
         except FileNotFoundError:
-            return None
-        return stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
+            # With no journal, a change to the index can reveal a lost deletion.
+            try:
+                stat = self.index_path.stat()
+            except FileNotFoundError:
+                return None
+            return ("index", stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+        return ("journal", stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
 
     def _refresh_journal(self):
         stamp = self._journal_stamp()
@@ -286,7 +292,10 @@ class DeletionManager:
         try:
             raw = self.journal.read_bytes()
         except FileNotFoundError:
-            if backup.exists():
+            if (self._missing_journal or self.ops or backup.exists() or
+                    any(clip.status in (ClipStatus.DELETION_PENDING, ClipStatus.DELETED)
+                        for clip in load_index(self.index_path))):
+                self._missing_journal = True
                 raise ValueError(f"restore {self.journal.name} before resuming deletion or export")
             return {}
         try:
@@ -303,6 +312,7 @@ class DeletionManager:
                 if not isinstance(op.clip_id, str) or not op.clip_id or op.clip_id in ops:
                     raise ValueError("expected a unique clip ID")
                 ops[op.clip_id] = op
+            self._missing_journal = False
             return ops
         except (ValueError, KeyError, TypeError):
             # Preserve what this reader observed. Never rename a file another desktop
