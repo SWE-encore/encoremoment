@@ -15,6 +15,9 @@ spec:
     - name: stage
       image: busybox:1.37
       command: [sleep, "1800"]
+      # First-use storage must bind in a topology where the inference Pod can run.
+      resources:
+        limits: {nvidia.com/gpu: "1"}
       securityContext:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true

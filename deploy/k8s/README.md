@@ -4,15 +4,17 @@ Use the [Compose inference image and trusted release bundle](../README.md#run-th
 
 ## Stage assets and start
 
-Run from the repository root against the intended Kubernetes context. Set `ENCORE_NS` to the existing test namespace, and use the same bundle and trusted manifest hash as in Compose. On a single-node cluster, release any previous GPU reservation before starting the trial.
+Run from the repository root against the intended Kubernetes context. Set `ENCORE_NS` to the existing test namespace, and use the same bundle and trusted manifest hash as in Compose. The staging Pod reserves one GPU while the volume is populated, so a StorageClass using WaitForFirstConsumer binds the volume in a GPU-capable topology. For a repeat trial on a single-GPU host, first scale the previous test Deployment to zero and wait for its Pod to terminate. This stops its live sessions.
 
 ```sh
 kubectl config current-context
 kubectl get nodes -o 'custom-columns=NAME:.metadata.name,GPUS:.status.allocatable.nvidia\.com/gpu'
 kubectl -n "$ENCORE_NS" apply -f deploy/k8s/models-pvc.yaml -f deploy/k8s/stage-models.yaml
 kubectl -n "$ENCORE_NS" wait --for=condition=Ready pod/encore-stage-models --timeout=120s
+: "${ENCORE_MANIFEST_SHA256:?set the trusted SHA-256 for this release}"
+kubectl -n "$ENCORE_NS" exec encore-stage-models -- mkdir -p "/bundle/$ENCORE_MANIFEST_SHA256"
 tar -C "$ENCORE_MODEL_BUNDLE" -cf - models reports/model-sha256.txt | \
-  kubectl -n "$ENCORE_NS" exec -i encore-stage-models -- tar -xf - -C /bundle
+  kubectl -n "$ENCORE_NS" exec -i encore-stage-models -- tar -xf - -C "/bundle/$ENCORE_MANIFEST_SHA256"
 kubectl -n "$ENCORE_NS" delete pod encore-stage-models --wait
 kubectl -n "$ENCORE_NS" create configmap encore-model-release \
   --from-literal="manifest-sha256=$ENCORE_MANIFEST_SHA256" --dry-run=client -o yaml | \
@@ -22,7 +24,7 @@ kubectl -n "$ENCORE_NS" rollout status deployment/encore-server --timeout=4m
 kubectl -n "$ENCORE_NS" port-forward svc/encore-server 8876:8765
 ```
 
-Only the staging pod writes to the model PVC. The server uses its read-only mount, a capped ephemeral `/tmp`, an internal Service, and a NetworkPolicy denying pod ingress for this port-forward trial. Run the following checks in a separate terminal.
+Each release occupies its own checksum-named directory on the model PVC. This keeps files from older model versions out of the active bundle and allows switching back to an already staged digest. Only the staging Pod writes to the volume. The server uses its read-only mount, a capped ephemeral `/tmp`, an internal Service, and a NetworkPolicy denying pod ingress for this port-forward trial. Run the following checks in a separate terminal.
 
 ```sh
 curl -fsS http://127.0.0.1:8876/readyz

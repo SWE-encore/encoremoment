@@ -59,7 +59,10 @@ spec:
             timeoutSeconds: 3
             failureThreshold: 3
           volumeMounts:
-            - {name: assets, mountPath: /bundle, readOnly: true}
+            - name: assets
+              mountPath: /bundle
+              subPathExpr: $(ENCORE_MANIFEST_SHA256)
+              readOnly: true
             - {name: tmp, mountPath: /tmp}
       volumes:
         - name: assets
