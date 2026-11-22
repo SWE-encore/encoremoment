@@ -128,7 +128,7 @@ def test_start_opens_the_device_and_off_closes_it_before_telling_the_server():
 def test_off_stops_the_upload():
     session, switch, t = live_session()
     mic = LiveMicrophone(session, clock=lambda: 10_000)
-    assert mic.feed(PCM_HALF_S, end_ms=10_000) == 1
+    assert mic.feed(PCM_HALF_S, end_ms=10_500) == 1
     switch.turn_off()
     sent_before = len(t.sent)
     assert mic.feed(PCM_HALF_S, end_ms=10_500) == 0

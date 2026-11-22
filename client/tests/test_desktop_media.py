@@ -177,3 +177,73 @@ def test_offline_camera_audio_stays_local_and_cannot_leak_into_reconnect():
     s.set_sensor("microphone", False)
     mic.feed(b"F" * 16000, end_ms=3500)
     assert len(uploaded) == 1 and len(recorded) == 4 and not mic.recording
+
+
+def test_reconnect_between_reads_keeps_only_post_connect_samples_for_upload():
+    from encore_client.sensing.live_mic import LiveMicrophone
+
+    now = [1000]
+    s = Session("ws://test", "ses-reconnect-capture", clock=lambda: now[0])
+    s._set_state(Conn.CONNECTED)
+    s.set_sensor("microphone", True)
+    s.set_sensor("camera", True)
+    uploaded, recorded = [], []
+    s.send_audio = lambda pcm, start, aec: uploaded.append((pcm, start, aec)) or True
+    mic = LiveMicrophone(s, on_pcm=lambda pcm, start: recorded.append((pcm, start)))
+    # None of the device callbacks run while the session is disconnected.
+    mic.feed(b"p" * 3200, end_ms=1100)
+    now[0] = 1500
+    s._set_state(Conn.DISCONNECTED)
+    now[0] = 1900
+    s._set_state(Conn.CONNECTED)
+    mic.feed(b"a" * 12800, end_ms=1500)  # completely outside the current connection
+    mic.feed(b"b" * 12800 + b"c" * 3200, end_ms=2000)
+    assert not uploaded
+    mic.feed(b"d" * 12800, end_ms=2400)
+    assert uploaded == [(b"c" * 3200 + b"d" * 12800, 1900, "off")]
+    assert [(pcm[:1], len(pcm), t) for pcm, t in recorded] == [
+        (b"p", 3200, 1000), (b"a", 12800, 1100), (b"b", 12800, 1500), (b"c", 16000, 1900)]
+    assert bytes(mic.recording) == uploaded[0][0]
+
+
+def test_qt_does_not_feed_offline_samples_into_the_live_echo_filter(monkeypatch):
+    from collections import deque
+    from types import SimpleNamespace
+    from encore_client.sensing import live_mic
+
+    now = [1000]
+    s = Session("ws://test", "ses-reconnect-aec", clock=lambda: now[0])
+    s._set_state(Conn.CONNECTED)
+    s.set_sensor("microphone", True)
+    s.set_sensor("camera", True)
+    now[0] = 1500
+    s._set_state(Conn.DISCONNECTED)
+    now[0] = 1900
+    s._set_state(Conn.CONNECTED)
+    processed, recorded, uploaded = [], [], []
+    s.send_audio = lambda pcm, start, aec: uploaded.append((pcm, start, aec)) or True
+
+    def cancel_echo(pcm, start):
+        processed.append((pcm, start))
+        return bytes(len(pcm)), "active"
+
+    mic = live_mic.LiveMicrophone(s, clock=lambda: now[0], player=SimpleNamespace(cancel_echo=cancel_echo),
+                                  on_pcm=lambda pcm, start: recorded.append((pcm, start)))
+    convert = SimpleNamespace(convert=lambda data, **kw: data[::3], delay_ms=0)
+    monkeypatch.setattr(live_mic, "AudioConverter", lambda fmt: convert)
+    capture = object.__new__(live_mic.QtAudioInput)
+    capture.mic = mic
+    capture.format = SimpleNamespace(bytesPerFrame=lambda: 2, sampleRate=lambda: 48000)
+    reads = iter([b"o" * 38400 + b"n" * 9600, b"v" * 38400])
+    capture._io = SimpleNamespace(readAll=lambda: SimpleNamespace(data=lambda: next(reads)))
+    capture._capture_start_ms, capture._device_bytes, capture._generation = None, 0, 1
+    capture._capture_buffer, capture._resampled_states = bytearray(), deque()
+    capture.converter = SimpleNamespace(convert=bytes, delay_ms=0)
+    capture._raw_converter = capture._clean_converter = convert
+    now[0] = 2000
+    capture._read()
+    now[0] = 2400
+    capture._read()
+    assert processed == [(b"n" * 9600, 1900), (b"v" * 38400, 2000)]
+    assert recorded == [(b"o" * 12800, 1500), (b"n" * 3200 + b"v" * 12800, 1900)]
+    assert uploaded == [(bytes(16000), 1900, "active")]
