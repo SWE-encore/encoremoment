@@ -180,8 +180,10 @@ class QtAudioInput:
         self.rate = rate
         self.converter = AudioConverter(fmt, rate)
         self._capture_buffer = bytearray()
-        self._last_end = None
+        self._capture_start_ms = None
+        self._device_bytes = 0
         self._generation = None
+        self._resampled_states = deque()
         self._raw_converter = self._clean_converter = None
         self._media_devices = QMediaDevices()
         if mic.player is not None:
@@ -197,7 +199,9 @@ class QtAudioInput:
 
         self.converter = AudioConverter(self.format, self.rate)
         self._capture_buffer.clear()
-        self._last_end = self._generation = None
+        self._capture_start_ms = self._generation = None
+        self._device_bytes = 0
+        self._resampled_states.clear()
         if self.mic.player is not None:
             self.mic.player.reset_echo()
             fmt = QAudioFormat()
@@ -236,13 +240,19 @@ class QtAudioInput:
                     if self._generation is not None:
                         self._reset_echo()
                     return
-                span = self.format.durationForBytes(len(data)) // 1000
-                if (self._generation != sensor.generation or
-                        (self._last_end is not None and abs(now - self._last_end - span) > RESYNC_MS)):
+                duration_us = self.format.durationForBytes(self._device_bytes + len(data))
+                discontinuity = (self._capture_start_ms is not None and
+                                 abs(self._capture_start_ms + duration_us // 1000 - now) > RESYNC_MS)
+                if self._generation != sensor.generation or discontinuity:
                     self._reset_echo()
-                self._generation, self._last_end = sensor.generation, now
+                self._generation = sensor.generation
+                if self._capture_start_ms is None:
+                    self._capture_start_ms = now - self.format.durationForBytes(len(data)) // 1000
+                self._device_bytes += len(data)
                 pcm = self.converter.convert(bytes(data))
-                end_ms = now - self.converter.delay_ms
+                # Qt callback timing may jitter even when device samples are contiguous.
+                end_ms = (self._capture_start_ms + self.format.durationForBytes(self._device_bytes) // 1000
+                          - self.converter.delay_ms)
                 if self.mic.player is None:
                     if pcm:
                         mic.feed(pcm, end_ms=end_ms)
@@ -255,11 +265,26 @@ class QtAudioInput:
                 del self._capture_buffer[:size]
                 end_ms -= len(self._capture_buffer) // 96
                 cleaned, status = mic.player.cancel_echo(raw, end_ms - size // 96)
-                audio = self._clean_converter.convert(cleaned)
-                original = self._raw_converter.convert(raw)
-                if audio:
-                    mic.feed(audio, raw_pcm=original, aec=status,
-                             end_ms=end_ms - self._clean_converter.delay_ms)
+                self._feed_resampled(raw, cleaned, status, end_ms)
+
+    def _feed_resampled(self, raw: bytes, cleaned: bytes, status: str, end_ms: int) -> None:
+        # 48 kHz input arrives in 10 ms blocks. The resampler sometimes holds
+        # multiple blocks and emits them together, even across an AEC change.
+        self._resampled_states.append((len(raw) // 3, status))
+        audio = self._clean_converter.convert(cleaned)
+        original = self._raw_converter.convert(raw)
+        if len(audio) != len(original):
+            raise RuntimeError("raw and filtered resamplers produced different sample counts")
+        output_end = end_ms - self._clean_converter.delay_ms
+        offset = 0
+        while offset < len(audio):
+            count, state = self._resampled_states.popleft()
+            stop = min(offset + count, len(audio))
+            if stop - offset < count:
+                self._resampled_states.appendleft((count - (stop - offset), state))
+            self.mic.feed(audio[offset:stop], raw_pcm=original[offset:stop], aec=state,
+                          end_ms=output_end - _ms(len(audio) - stop))
+            offset = stop
 
 
 def _ms(n_bytes: int) -> int:

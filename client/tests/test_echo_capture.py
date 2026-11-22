@@ -3,10 +3,11 @@ import tempfile
 import time
 import unittest
 import wave
+from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 
-from encore_client.sensing.live_mic import LiveMicrophone
+from encore_client.sensing.live_mic import LiveMicrophone, QtAudioInput
 from encore_client.session.session import Conn
 
 try:
@@ -28,6 +29,60 @@ class RawTrackTest(unittest.TestCase):
         self.assertEqual(raw, [(b"\x01\x00"*8000, 1000)])
         self.assertEqual(uploaded, [(bytes(16000), 1000, "uncancelled")])
         self.assertFalse(mic.recording)
+
+    def test_jitter_and_resampler_delay_keep_capture_time_and_aec_with_pcm(self):
+        # Three contiguous 10 ms device buffers are delivered at uneven intervals.
+        # The 48 -> 16 kHz converter emits no output, then 15 ms, then 15 ms.
+        class BufferedConverter:
+            def __init__(self):
+                self.pending = b""
+                self.sizes = iter((0, 480, 480))
+
+            def convert(self, block):
+                self.pending += block[:len(block) // 3]
+                size = next(self.sizes)
+                result, self.pending = self.pending[:size], self.pending[size:]
+                return result
+
+            @property
+            def delay_ms(self):
+                return len(self.pending) // 32
+
+        stamps, uploads, recording = [], [], []
+        states = iter(("warming_up", "active", "reference_unavailable"))
+
+        def cancel_echo(block, capture_ms):
+            stamps.append(capture_ms)
+            return bytes(len(block)), next(states)
+
+        session = SimpleNamespace(
+            state=Conn.CONNECTED, view=SimpleNamespace(sensors={"microphone": SimpleNamespace(enabled=True, generation=1)}),
+            send_audio=lambda pcm, stamp, aec: uploads.append((pcm, stamp, aec)) or True,
+        )
+        clock = iter((1010, 1070, 1071))
+        mic = LiveMicrophone(session, chunk_ms=10, clock=lambda: next(clock),
+                             player=SimpleNamespace(cancel_echo=cancel_echo),
+                             on_pcm=lambda raw, stamp: recording.append((raw, stamp)))
+        capture = object.__new__(QtAudioInput)
+        capture.mic = mic
+        capture.format = SimpleNamespace(durationForBytes=lambda size: size * 1000 // 96)
+        reads = iter(bytes([v]) * 960 for v in (1, 2, 3))
+        capture._io = SimpleNamespace(readAll=lambda: SimpleNamespace(data=lambda: next(reads)))
+        capture.converter = SimpleNamespace(convert=bytes, delay_ms=0)
+        capture._generation = 1
+        capture._capture_start_ms = None
+        capture._device_bytes = 0
+        capture._resampled_states = deque()
+        capture._capture_buffer = bytearray()
+        capture._raw_converter, capture._clean_converter = BufferedConverter(), BufferedConverter()
+
+        for _ in range(3):
+            capture._read()
+        self.assertEqual(stamps, [1000, 1010, 1020])
+        self.assertEqual([(stamp, aec) for _, stamp, aec in uploads],
+                         [(1000, "warming_up"), (1010, "active"), (1020, "reference_unavailable")])
+        self.assertEqual([pcm for pcm, _, _ in uploads], [bytes(320)] * 3)
+        self.assertEqual(recording, [(bytes([v]) * 320, 1000 + 10 * (v - 1)) for v in (1, 2, 3)])
 
 
 @unittest.skipUnless(PlayerPipeline and Gst.ElementFactory.find("webrtcdsp") and
