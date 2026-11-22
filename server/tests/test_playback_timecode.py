@@ -15,7 +15,7 @@ import wave
 import pytest
 
 from encore_client.player.anchors import AnchorTracker
-from encore_client.sensing.wav_mic import WavMicrophone
+from client.tests.live_harness import microphone
 from encore_client.session.session import Conn, Session, event_rows
 from encore_server.models import LoudnessModel
 from encore_server.server import EncoreServer, serve_in_thread
@@ -83,14 +83,6 @@ def laugh_wav(tmp_path):
     return path
 
 
-class Clock:
-    def __init__(self, t):
-        self.t = t
-
-    def __call__(self):
-        return self.t
-
-
 def wait(session, until, timeout=5.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -113,11 +105,8 @@ def connect(url, sid):
 
 def upload(session, wav):
     """Send the whole file as if 8 s had passed. Results are not read here."""
-    clock = Clock(AUDIO_START_MS)
-    mic = WavMicrophone(session, wav, clock=clock)
-    mic.pump()
-    clock.t = AUDIO_START_MS + 8_000
-    mic.pump()
+    mic, clock = microphone(session, wav, AUDIO_START_MS)
+    clock.play(mic, 8_000)
     assert mic.done
 
 

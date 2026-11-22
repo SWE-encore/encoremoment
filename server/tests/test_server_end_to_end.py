@@ -8,7 +8,7 @@ import wave
 
 import pytest
 
-from encore_client.sensing.wav_mic import WavMicrophone
+from client.tests.live_harness import microphone
 from encore_client.session import ws
 from encore_client.session.session import Conn, Session
 from encore_server.models import LoudnessModel
@@ -29,14 +29,6 @@ def write_wav(path, parts):
         w.setframerate(RATE)
         w.writeframes(struct.pack(f"<{len(samples)}h", *samples))
     return sum(s for s, _ in parts)
-
-
-class Clock:
-    def __init__(self, t=0):
-        self.t = t
-
-    def __call__(self):
-        return self.t
 
 
 @pytest.fixture
@@ -67,11 +59,8 @@ def anchor(capture_ms, position_ms):
 
 def play(session, wav_path, seconds, start_ms=10_000):
     """Stream the whole file as if ``seconds`` had passed since ``start_ms``."""
-    clock = Clock(start_ms)
-    mic = WavMicrophone(session, wav_path, clock=clock)
-    mic.pump()  # starts the capture run at start_ms
-    clock.t = start_ms + round(seconds * 1000)
-    mic.pump()
+    mic, clock = microphone(session, wav_path, start_ms)
+    clock.play(mic, round(seconds * 1000))
     assert mic.done
     return mic
 
