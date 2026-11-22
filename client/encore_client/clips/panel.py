@@ -148,7 +148,12 @@ class ClipPanel(QWidget):
         if clip is None or self.deletions is None or not self.confirm_delete(clip):
             return False
         self._release_if_playing(clip)
-        self.deletions.delete(clip.clip_id)
+        try:
+            self.deletions.delete(clip.clip_id)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self._rebuild()
+            self.detail.setText(f"Cannot delete clip: {exc}")
+            return False
         self._rebuild()
         return True
 

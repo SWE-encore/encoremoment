@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from .model import Clip, ClipStatus, load_index
+from .storage import index_lock
 
 RETRY_MS = 2_000
 
@@ -106,7 +107,9 @@ class DeletionManager:
         self.clock = clock
         self.retry_ms = retry_ms
         self.journal_error: str | None = None
-        self.ops: dict[str, Deletion] = self._load_journal()
+        self.ops: dict[str, Deletion] = {}
+        self._missing_journal = False
+        self._stamp = object()
         self.version = 0                 # bumps on every change, for the UI
         self._next_retry_ms = 0
         self.resumed = False
@@ -122,10 +125,14 @@ class DeletionManager:
 
     def may_commit_export(self, clip_id: str) -> bool:
         """For the clip pipeline: commit an export only when this is True (IV-G, IV-J)."""
-        return self.resumed and clip_id not in self.ops
+        self._refresh_journal()
+        return self.resumed and not self.journal_error and clip_id not in self.ops
 
     def load_clips(self) -> list[Clip]:
         """The clip index with tombstones applied: deleted clips never regain a file."""
+        self._refresh_journal()
+        if self.journal_error:
+            raise ValueError(self.journal_error)
         return [self._apply(c) for c in load_index(self.index_path)]
 
     def _apply(self, clip: Clip) -> Clip:
@@ -139,18 +146,20 @@ class DeletionManager:
 
     def delete(self, clip_id: str) -> Deletion:
         """Request deletion. Repeating it returns the same operation."""
-        if clip_id in self.ops:
-            self.process()
-            return self.ops[clip_id]
-        entry = next((c for c in load_index(self.index_path) if c.clip_id == clip_id), None)
-        if entry is None:
-            raise KeyError(f"clip {clip_id} is not in the index")
-        files = tuple(f for f in (entry.path, entry.thumbnail, *entry.temp_paths) if f)
-        op = Deletion(op_id=f"del-{uuid.uuid4().hex}", clip_id=clip_id, session_id=entry.session_id,
-                      files=files, requested_ms=self.clock(), remote_required=self.remote is not None)
-        self.ops[clip_id] = op
-        self._save_journal()                                     # persist_deletion_intent
-        self._set_index_status(clip_id, ClipStatus.DELETION_PENDING)   # hide link, show PENDING
+        with index_lock(self.index_path):
+            self._refresh_journal()
+            if self.journal_error:
+                raise ValueError(self.journal_error)
+            if clip_id not in self.ops:
+                entry = next((c for c in load_index(self.index_path) if c.clip_id == clip_id), None)
+                if entry is None:
+                    raise KeyError(f"clip {clip_id} is not in the index")
+                files = tuple(f for f in (entry.path, entry.thumbnail, *entry.temp_paths) if f)
+                self.ops[clip_id] = Deletion(
+                    op_id=f"del-{uuid.uuid4().hex}", clip_id=clip_id, session_id=entry.session_id,
+                    files=files, requested_ms=self.clock(), remote_required=self.remote is not None)
+                self._save_journal()
+                self._set_index_status_locked(clip_id, ClipStatus.DELETION_PENDING)
         if self.cancel_export is not None:
             self.cancel_export(clip_id)                          # cancel_exports (tombstone already written)
         self._next_retry_ms = 0
@@ -159,6 +168,7 @@ class DeletionManager:
 
     def tick(self) -> None:
         """Call on a timer: retries pending cleanup."""
+        self._refresh_journal()
         if any(not op.completed for op in self.ops.values()) and self.clock() >= self._next_retry_ms:
             self.process()
 
@@ -167,29 +177,52 @@ class DeletionManager:
         self.resumed = True
 
     def process(self) -> None:
-        changed = False
-        for clip_id, op in list(self.ops.items()):
-            if op.completed:
-                continue
-            new = op
-            if not new.local_done:
-                new = self._local_cleanup(new)
-            if new.local_done and new.remote_required and not new.remote_done:
-                new = self._remote_cleanup(new)
-            if new.local_done and (new.remote_done or not new.remote_required):
-                new = replace(new, completed_ms=self.clock(), error=None)
-                self._set_index_status(clip_id, ClipStatus.DELETED)
-            if new != op:
-                self.ops[clip_id] = new
-                changed = True
-        if changed:
-            self._save_journal()
+        self._refresh_journal()
+        if self.journal_error or not any(not op.completed for op in self.ops.values()):
+            return
+        with index_lock(self.index_path):
+            self._refresh_journal()
+            if self.journal_error:
+                return
+            changed = False
+            for clip_id, op in list(self.ops.items()):
+                if op.completed:
+                    continue
+                new = op if op.local_done else self._local_cleanup(op)
+                if new.local_done and not new.remote_required:
+                    new = replace(new, completed_ms=self.clock(), error=None)
+                    self._set_index_status_locked(clip_id, ClipStatus.DELETED)
+                if op != new:
+                    self.ops[clip_id] = new
+                    changed = True
+            if changed:
+                self._save_journal()
+            waiting = [op for op in self.ops.values() if
+                       op.local_done and op.remote_required and not op.completed and self.remote is not None]
+        # Network acknowledgement never holds the writer lock. Merge with the
+        # latest revision so another desktop's success cannot be rolled back.
+        for op in waiting:
+            result = self._remote_cleanup(op)
+            with index_lock(self.index_path):
+                self._refresh_journal()
+                current = self.ops.get(op.clip_id)
+                if self.journal_error or current is None or current.op_id != op.op_id or current.completed:
+                    continue
+                if result.remote_done:
+                    result = replace(result, completed_ms=self.clock(), error=None)
+                    self._set_index_status_locked(op.clip_id, ClipStatus.DELETED)
+                if result != current:
+                    self.ops[op.clip_id] = result
+                    self._save_journal()
         self._next_retry_ms = self.clock() + self.retry_ms
 
     # ---- cleanup steps ------------------------------------------------------------
 
     def _local_cleanup(self, op: Deletion) -> Deletion:
-        keep = self._files_in_use(exclude=op.clip_id)
+        try:
+            keep = self._files_in_use(exclude=op.clip_id)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            return replace(op, error=f"cannot verify clip file references: {exc}")
         errors = []
         for rel in op.files:
             path = self._inside(rel)
@@ -214,11 +247,7 @@ class DeletionManager:
 
     def _files_in_use(self, exclude: str) -> set[Path]:
         used = set()
-        try:
-            clips = load_index(self.index_path)
-        except (OSError, ValueError, KeyError, TypeError):
-            return used
-        for c in clips:
+        for c in load_index(self.index_path, required=True):
             if c.clip_id == exclude or c.clip_id in self.ops:
                 continue
             for rel in (c.path, c.thumbnail, *c.temp_paths):
@@ -234,38 +263,83 @@ class DeletionManager:
 
     # ---- persistence --------------------------------------------------------------
 
-    def _load_journal(self) -> dict[str, Deletion]:
+    def _journal_stamp(self):
         try:
-            data = json.loads(self.journal.read_text(encoding="utf-8"))
-            ops = {}
-            for d in data.get("operations", []):
-                d = dict(d, files=tuple(d.get("files", ())))
-                ops[d["clip_id"]] = Deletion(**d)
-            return ops
+            stat = self.journal.stat()
         except FileNotFoundError:
-            return {}
-        except (OSError, ValueError, TypeError, KeyError) as exc:
-            # Keep the damaged journal for inspection instead of silently losing tombstones.
-            self.journal_error = f"deletion journal unreadable ({exc}); kept as {self.journal.name}.corrupt"
+            # With no journal, a change to the index can reveal a lost deletion.
             try:
-                os.replace(self.journal, self.journal.with_name(self.journal.name + ".corrupt"))
-            except OSError:
-                pass
+                stat = self.index_path.stat()
+            except FileNotFoundError:
+                return None
+            return ("index", stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+        return ("journal", stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+
+    def _refresh_journal(self):
+        stamp = self._journal_stamp()
+        if stamp != self._stamp:
+            try:
+                self.ops = self._load_journal()
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                self.journal_error = f"Deletion journal unreadable: {exc}"
+            else:
+                self.journal_error = None
+            self._stamp = stamp
+            self.version += 1
+
+    def _load_journal(self) -> dict[str, Deletion]:
+        backup = self.journal.with_name(self.journal.name + ".corrupt")
+        try:
+            raw = self.journal.read_bytes()
+        except FileNotFoundError:
+            if (self._missing_journal or self.ops or backup.exists() or
+                    any(clip.status in (ClipStatus.DELETION_PENDING, ClipStatus.DELETED)
+                        for clip in load_index(self.index_path))):
+                self._missing_journal = True
+                raise ValueError(f"restore {self.journal.name} before resuming deletion or export")
             return {}
+        try:
+            data = json.loads(raw)
+            if not isinstance(data, dict) or not isinstance(data.get("operations"), list):
+                raise ValueError("expected an operations list")
+            ops = {}
+            for row in data["operations"]:
+                if not isinstance(row, dict) or not isinstance(row.get("files"), list):
+                    raise ValueError("expected a deletion with a file list")
+                if any(not isinstance(path, str) for path in row["files"]):
+                    raise ValueError("deletion files must contain file names")
+                op = Deletion(**dict(row, files=tuple(row["files"])))
+                if not isinstance(op.clip_id, str) or not op.clip_id or op.clip_id in ops:
+                    raise ValueError("expected a unique clip ID")
+                ops[op.clip_id] = op
+            self._missing_journal = False
+            return ops
+        except (ValueError, KeyError, TypeError):
+            # Preserve what this reader observed. Never rename a file another desktop
+            # could have just replaced with a repaired journal.
+            try:
+                with backup.open("xb") as copy:
+                    copy.write(raw)
+            except FileExistsError:
+                pass
+            raise
 
     def _save_journal(self) -> None:
         data = {"version": 1, "operations": [
             dict(op.__dict__, files=list(op.files)) for op in self.ops.values()]}
         _atomic_write(self.journal, json.dumps(data, indent=2))
+        self._stamp = self._journal_stamp()
         self.version += 1
 
-    def _set_index_status(self, clip_id: str, status: ClipStatus) -> None:
-        """Mark the clip in the index. Event metadata stays; media fields are cleared when deleted."""
+    def _set_index_status_locked(self, clip_id: str, status: ClipStatus) -> None:
         try:
             data = json.loads(self.index_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return                              # tombstones still apply through load_clips
-        for entry in data.get("clips", []):
+        entries = data.get("clips") if isinstance(data, dict) else None
+        if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
+            return  # Preserve the damaged index; the journal still holds the deletion.
+        for entry in entries:
             if entry.get("clip_id") == clip_id:
                 entry["status"] = status.value
                 if status is ClipStatus.DELETED:
