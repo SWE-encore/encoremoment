@@ -46,7 +46,7 @@ def run_headless(session: Session, driver: ScenarioDriver | None, timeout_s: flo
             if session.state is Conn.DISCONNECTED and session.retry_at_ms is None:
                 break  # dropped and not reconnecting
             # A live session (no scenario) runs until the timeout.
-            if driver is not None and driver.done and _done(mic):
+            if driver is not None and driver.done and _done(mic) and not session.media_pending:
                 break
             time.sleep(0.05)
     except KeyboardInterrupt:
