@@ -269,6 +269,70 @@ def test_unknown_clip_and_damaged_journal(tmp_path):
         journal_path(index).name + ".corrupt").exists()
 
 
+@pytest.mark.parametrize("damage", [[], {}, {"operations": {}}, {"operations": [None]}])
+def test_malformed_journal_waits_for_repair_without_losing_tombstones(tmp_path, damage):
+    index = setup(tmp_path, [entry("c1", "c1.mp4", []), entry("c2", "c2.mp4", [])],
+                  files=("c1.mp4", "c2.mp4"))
+    dm = manager(index)
+    first = dm.delete("c1")
+    journal = journal_path(index)
+    original = journal.read_bytes()
+    damaged = json.dumps(damage).encode()
+    journal.write_bytes(damaged)
+    assert not dm.may_commit_export("c1") and dm.state("c1") == first
+    assert journal.with_suffix(".json.corrupt").read_bytes() == damaged
+
+    restarted = manager(index)
+    assert not restarted.may_commit_export("c1")
+    with pytest.raises(ValueError, match="journal"):
+        restarted.delete("c2")
+    with pytest.raises(ValueError, match="journal"):
+        restarted.load_clips()
+    assert (tmp_path / "c2.mp4").is_file()
+    assert journal.read_bytes() == damaged
+
+    journal.write_bytes(original)
+    restarted.tick()
+    assert restarted.journal_error is None
+    assert restarted.state("c1").op_id == first.op_id
+    assert not restarted.may_commit_export("c1")
+    assert restarted.delete("c2").completed
+
+
+def test_invalid_file_list_cannot_remove_another_clips_file(tmp_path):
+    index = setup(tmp_path, [entry("c1", "shared.mp4", []),
+                             entry("c2", "c2.mp4", [], temp_paths=["shared.mp4"])],
+                  files=("c2.mp4", "shared.mp4"))
+    def damage_after_request(_clip_id):
+        data = json.loads(index.read_text())
+        data["clips"][1]["temp_paths"] = "shared.mp4"
+        index.write_text(json.dumps(data))
+
+    dm = manager(index, cancel_export=damage_after_request)
+    assert not dm.delete("c1").completed
+    assert (tmp_path / "shared.mp4").is_file()
+    data = json.loads(index.read_text())
+    data["clips"][1]["temp_paths"] = ["shared.mp4"]
+    index.write_text(json.dumps(data))
+    dm.process()
+    assert dm.state("c1").completed
+    assert (tmp_path / "shared.mp4").is_file()
+
+
+def test_invalid_index_after_remote_request_keeps_index_bytes(tmp_path):
+    index = setup(tmp_path, [entry("c1", "c1.mp4", [])])
+    remote = Remote(online=False)
+    dm = manager(index, remote=remote)
+    op = dm.delete("c1")
+    index.write_text("[]")
+    with pytest.raises(ValueError, match="clip index"):
+        dm.load_clips()
+    remote.online = True
+    dm.process()
+    assert dm.state("c1").op_id == op.op_id and dm.state("c1").completed
+    assert index.read_text() == "[]"
+
+
 def test_index_without_event_links_still_loads(tmp_path):
     index = setup(tmp_path, [{"clip_id": "old", "event_type": "gasp", "timecode": "00:01:00",
                               "intensity": .4, "status": "ready", "path": "c1.mp4"}])
