@@ -5,11 +5,11 @@ from ..clips.deletion import DeletionManager
 from ..clips.panel import ClipPanel
 from ..sensing.camera import CameraControl
 from ..session.panel import SessionPanel
-from ..session.session import Conn
+from ..session.session import STARTED, event_rows , Conn
 from .camera_panel import CameraPanel
 from .highlights import HighlightsPanel
 
-ACTIVE = (Conn.CONNECTING, Conn.CONNECTED, Conn.DISCONNECTED)
+ACTIVE = STARTED  # Start pressed, End not: a drop does not stop the devices
 
 
 class Workspace(QWidget):

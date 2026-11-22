@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
-from .session.session import DeliveryLog, ScenarioDriver, Session, load_scenario
+from .session.session import RECONNECT_DELAYS_MS, DeliveryLog, ScenarioDriver, Session, load_scenario
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -79,13 +79,15 @@ def main(argv=None):
             from .session.fake_server import FakeServer
             server = FakeServer(scenario, port=0, interval_s=0.05).start()
         # A live session turns the microphone on at Start (R11), so the server's
-        # events carry a microphone generation the client accepts. A scenario
-        # sends its own controls instead.
+        # events carry a microphone generation the client accepts, and reconnects
+        # after a drop (EM-20). A scenario sends its own controls and is not
+        # reconnected: the fake server would replay its script from the start.
         url = server.url if server else (local.url if local else args.server)
         session = Session(url,
                           scenario["session_id"] if scenario else args.session_id,
                           log=DeliveryLog(args.log),
-                          microphone_on_start=scenario is None)
+                          microphone_on_start=scenario is None,
+                          reconnect_delays_ms=RECONNECT_DELAYS_MS if scenario is None else None)
         driver = ScenarioDriver(session, scenario) if scenario else None
         mic_clock = args.no_player and scenario is None
         if mic_clock:

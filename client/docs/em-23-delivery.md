@@ -10,7 +10,7 @@ Jira: [EM-23](https://hanyang-team-ldzgset2.atlassian.net/browse/EM-23) · Contr
 | Delivering the same sample result twice leaves one event in the UI | In `04_duplicate_delivery.json`, repeated deliveries vary the cursor/revision; nine messages are received, but the table retains one `evt-0004` row | `test_same_result_twice_leaves_one_event` |
 | Indicate connection loss and record the delivery procedure and reproduction evidence | Disconnecting with `--drop-after` displays a red "Disconnected: reason" status and greys out the table. Every step is recorded in the `--log` file | `test_dropped_connection_is_reported`, `test_silent_server_counts_as_dropped`, `test_unreachable_server_is_reported` |
 
-R11 recovery after reconnection (cursor replay and resending unsent messages) belongs to EM-20. This implementation only displays the disconnected state and retains undelivered messages in `unsent`.
+R11 recovery after reconnection (cursor replay and resending unsent messages) was added later in EM-20: [em-20-reconnect.md](em-20-reconnect.md). This page records the EM-23 behavior, which displays the disconnected state and retains undelivered messages in `unsent`.
 
 ## Delivery procedure
 
