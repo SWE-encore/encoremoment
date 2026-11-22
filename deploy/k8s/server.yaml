@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: encore-server
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: encore-server}
+  template:
+    metadata:
+      labels: {app: encore-server}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: server
+          image: encoremoment-server:inference
+          imagePullPolicy: IfNotPresent
+          ports: [{name: stream, containerPort: 8765}]
+          env:
+            - {name: ENCORE_MODEL, value: yamnet}
+            - {name: ENCORE_REQUIRE_GPU, value: "1"}
+            - name: ENCORE_MANIFEST_SHA256
+              valueFrom:
+                configMapKeyRef: {name: encore-model-release, key: manifest-sha256}
+          resources:
+            requests: {cpu: "1", memory: 2Gi, nvidia.com/gpu: "1"}
+            limits: {memory: 4Gi, nvidia.com/gpu: "1"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          startupProbe:
+            httpGet: {path: /readyz, port: stream}
+            periodSeconds: 5
+            timeoutSeconds: 7
+            failureThreshold: 36
+          readinessProbe:
+            httpGet: {path: /readyz, port: stream}
+            periodSeconds: 10
+            timeoutSeconds: 7
+          livenessProbe:
+            httpGet: {path: /livez, port: stream}
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: assets
+              mountPath: /bundle
+              subPathExpr: $(ENCORE_MANIFEST_SHA256)
+              readOnly: true
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: assets
+          persistentVolumeClaim: {claimName: encore-models}
+        - name: tmp
+          emptyDir: {sizeLimit: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: encore-server
+spec:
+  type: ClusterIP
+  selector: {app: encore-server}
+  ports: [{name: stream, port: 8765, targetPort: stream}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: encore-server-private
+spec:
+  podSelector:
+    matchLabels: {app: encore-server}
+  policyTypes: [Ingress]
+  ingress: []
