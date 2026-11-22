@@ -404,11 +404,12 @@ class Session:
         return [m["idempotency_key"] for m in self.controls if m["idempotency_key"] not in self.acks]
 
     def _end_when_settled(self, stream_closed: bool = False) -> None:
-        settled = not self.open_events and not self.unacked_controls
+        pending_results = bool(self.view.buffered) or getattr(self._transport, "backlogged", False)
+        settled = not pending_results and not self.open_events and not self.unacked_controls
         if settled or stream_closed or self._clock() >= self._end_by_ms:
             self.end_settled = settled
             self.log.write("end_wait", settled=settled, open_events=self.open_events,
-                           unacked=self.unacked_controls)
+                           unacked=self.unacked_controls, pending_results=pending_results)
             self.end()
 
     def end(self) -> None:

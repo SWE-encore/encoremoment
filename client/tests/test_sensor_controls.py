@@ -225,3 +225,26 @@ def test_set_sensor_refuses_no_change_and_stale_generation():
     with pytest.raises(ValueError):
         session.set_sensor("speaker", True)
     assert session.view.rejected == {}
+
+
+@pytest.mark.parametrize("fill_gap", [True, False])
+def test_end_waits_for_the_missing_cursor_even_after_controls_are_acknowledged(fill_gap):
+    session, transports = make_session(microphone_on_start=True)
+    transport = open_session(session, transports)
+    transport.pending.append(("message", json.dumps(EVENT_UPDATES[-1])))
+    session.poll()
+    assert session.view.buffered
+    session.finish(grace_ms=100)
+    for control in session.controls:
+        session.acks[control["idempotency_key"]] = "applied"
+
+    session.poll()
+    assert session.state is Conn.ENDING
+    if fill_gap:
+        for message in EVENT_UPDATES[:-1]:
+            transport.pending.append(("message", json.dumps(message)))
+    else:
+        transport.pending.append(("closed", "connection lost"))
+    session.poll()
+    assert session.state is Conn.ENDED
+    assert session.end_settled is fill_gap
