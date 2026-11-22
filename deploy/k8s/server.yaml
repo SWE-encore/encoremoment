@@ -39,7 +39,7 @@ spec:
             readOnlyRootFilesystem: true
             capabilities: {drop: [ALL]}
           startupProbe:
-            httpGet: {path: /readyz, port: stream}
+            httpGet: {path: /livez, port: stream}
             periodSeconds: 5
             timeoutSeconds: 7
             failureThreshold: 36
