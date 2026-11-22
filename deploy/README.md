@@ -49,6 +49,8 @@ docker compose -f deploy/compose.yaml -f deploy/compose.history.yaml up --build 
 docker compose -f deploy/compose.yaml -f deploy/compose.history.yaml exec -T server python deploy/smoke.py
 ```
 
+The deployment CI also stops the disposable database, generates another FINAL, recreates the server container, and checks that the recovered database contains the same event exactly once.
+
 In fixture mode, note the printed session and event IDs. Save the history, restart the server, and compare the results. The expected event appears once in both responses.
 
 ```sh
@@ -58,4 +60,4 @@ curl --retry 15 --retry-connrefused --retry-delay 1 -fsS "http://127.0.0.1:8876/
 docker compose -f deploy/compose.yaml -f deploy/compose.history.yaml down
 ```
 
-The named volume survives `down`. For a separately administered PostgreSQL database, apply the migration as schema owner and use `ENCORE_HISTORY=1` with an injected `DATABASE_URL` and credentials for the runtime role. See the [RDS connection and CA settings](../server/README.md#optional-postgresql-event-history-em-29). Mount the CA file read-only at the DSN's `sslrootcert` path when using RDS. `GET /readyz` checks the enabled archive and the face subprocess before returning HTTP 200. The sensor WebSocket is reachable only after model loading finishes.
+The PostgreSQL volume and the PC-event delivery outbox volume survive `down` and container recreation. In history mode the server writes queued FINAL events to `/var/lib/encore/history-outbox.sqlite3` as UID 10001. Keep the same Compose project name across restarts to reuse its volumes. For a separately administered PostgreSQL database, apply the migration as schema owner and use `ENCORE_HISTORY=1` with an injected `DATABASE_URL` and credentials for the runtime role. See the [RDS connection and CA settings](../server/README.md#optional-postgresql-event-history-em-29). Mount the CA file read-only at the DSN's `sslrootcert` path when using RDS. `GET /readyz` checks the enabled archive and the face subprocess before returning HTTP 200. The sensor WebSocket is reachable only after model loading finishes.

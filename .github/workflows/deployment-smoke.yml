@@ -39,16 +39,28 @@ jobs:
           printf '%s\n' "$result"
           pc_result=$(python3 deploy/smoke.py --pc --server ws://127.0.0.1:8876)
           printf '%s\n' "$pc_result"
-          "${compose[@]}" restart server
-          "${compose[@]}" up --wait --wait-timeout 90
-          python3 - "$result" "$pc_result" <<'PY'
-          import json, sys
+          "${compose[@]}" exec -T server sh -c 'test -w /var/lib/encore && test -s "$ENCORE_HISTORY_OUTBOX"'
+          "${compose[@]}" stop history
+          offline_result=$("${compose[@]}" exec -T server python deploy/smoke.py)
+          printf '%s\n' "$offline_result"
+          "${compose[@]}" stop server
+          "${compose[@]}" up -d --wait --wait-timeout 90 history
+          "${compose[@]}" up -d --no-deps --force-recreate --wait --wait-timeout 90 server
+          "${compose[@]}" exec -T server sh -c 'test -s "$ENCORE_HISTORY_OUTBOX"'
+          python3 - "$result" "$pc_result" "$offline_result" <<'PY'
+          import json, sys, time
           from urllib.request import urlopen
           for raw in sys.argv[1:]:
               fixture = json.loads(raw)
               url = f"http://127.0.0.1:8876/v1/sessions/{fixture['session_id']}/events"
-              with urlopen(url, timeout=10) as response:
-                  events = json.load(response)["events"]
-              assert [ev["event_id"] for ev in events] == fixture["final_event_ids"], events
+              deadline = time.monotonic() + 45
+              while True:
+                  with urlopen(url, timeout=10) as response:
+                      events = json.load(response)["events"]
+                  if [ev["event_id"] for ev in events] == fixture["final_event_ids"]:
+                      break
+                  if time.monotonic() >= deadline:
+                      raise AssertionError(f"Expected {fixture['final_event_ids']} for {fixture['session_id']}; got {events}")
+                  time.sleep(1)
               assert all(ev["phase"] == "FINAL" for ev in events), events
           PY

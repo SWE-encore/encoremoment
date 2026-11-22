@@ -10,10 +10,12 @@ services:
       ENCORE_MODEL: ${ENCORE_MODEL:-loudness}
       ENCORE_MANIFEST_SHA256: ${ENCORE_MANIFEST_SHA256:-}
       ENCORE_HISTORY: ${ENCORE_HISTORY:-0}
+      ENCORE_HISTORY_OUTBOX: /var/lib/encore/history-outbox.sqlite3
       DATABASE_URL: ${DATABASE_URL:-}
     ports:
       - "127.0.0.1:${ENCORE_PORT:-8876}:8765"
     volumes:
+      - history-outbox:/var/lib/encore
       - type: bind
         source: ${ENCORE_MODEL_BUNDLE:-./models}
         target: /bundle
@@ -32,3 +34,5 @@ services:
       interval: 10s
       timeout: 8s
       retries: 3
+volumes:
+  history-outbox:

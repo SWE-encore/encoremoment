@@ -1,6 +1,7 @@
 FROM python:3.12-slim-bookworm AS fixture
 ENV PYTHONPATH=/app/server PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 HOME=/tmp
 WORKDIR /app
+RUN install -d -m 0700 -o 10001 -g 10001 /var/lib/encore
 COPY server/requirements.txt server/requirements-history.txt server/
 RUN pip install --no-cache-dir -r server/requirements-history.txt
 COPY contracts/reference contracts/reference
