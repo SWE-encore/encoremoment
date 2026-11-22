@@ -236,6 +236,29 @@ def test_a_failed_local_delete_stays_pending_and_is_retried(tmp_path, monkeypatc
     assert dm.state("c1").completed and not (tmp_path / "c1.mp4").exists()
 
 
+@pytest.mark.parametrize("damage", ["unreadable", "missing", "missing_entries"])
+def test_retry_preserves_shared_media_until_index_can_be_read(tmp_path, damage):
+    shared = "shared.mp4"
+    index = setup(tmp_path, [entry("c1", shared, ["evt-1"]), entry("c2", shared, ["evt-2"])],
+                  (shared,))
+    saved = index.read_bytes()
+
+    def interrupt(_clip_id):
+        if damage == "missing":
+            index.unlink()
+        else:
+            index.write_text("{" if damage == "unreadable" else "{}")
+
+    dm = manager(index, cancel_export=interrupt)
+    op = dm.delete("c1")
+    assert not op.completed
+    assert (tmp_path / shared).is_file()
+    index.write_bytes(saved)
+    resumed = manager(index)
+    assert resumed.state("c1").completed
+    assert playable_path(clip_of(resumed, "c2"), tmp_path) == tmp_path / shared
+
+
 def test_unknown_clip_and_damaged_journal(tmp_path):
     index = setup(tmp_path, [entry("c1", "c1.mp4", ["evt-0006"])])
     with pytest.raises(KeyError):
@@ -295,3 +318,22 @@ def test_panel_cancel_keeps_the_clip(app, tmp_path):
     panel.list.setCurrentRow(0)
     assert not panel.delete_selected()
     assert (tmp_path / "c1.mp4").exists() and not journal_path(index).exists()
+
+
+def test_two_desktops_preserve_pending_cleanup_and_operation_identity(tmp_path):
+    index = setup(tmp_path, [entry("one", "one.mp4", ["e1"]), entry("two", "two.mp4", ["e2"])],
+                  ("one.mp4", "two.mp4"))
+    remote = Remote(online=False)
+    first = manager(index, remote=remote)
+    second = manager(index)
+    expected = first.delete("one")
+    assert second.delete("one").op_id == expected.op_id
+    assert second.delete("two").completed
+    assert not second.may_commit_export("one")
+    restarted = manager(index, remote=remote)
+    assert set(restarted.ops) == {"one", "two"}
+    assert not restarted.state("one").completed
+    remote.online = True
+    first.process()
+    assert first.state("one").completed and first.state("two").completed
+    assert {request[0] for request in remote.requests} == {expected.op_id}
