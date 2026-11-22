@@ -26,6 +26,7 @@ STATUS = {
     Conn.CONNECTED: ("#1a8f3c", "Connected"),
     Conn.DISCONNECTED: ("#c62828", "Disconnected"),
     Conn.RECONNECTING: ("#c28a00", "Reconnecting…"),
+    Conn.ENDING: ("#c28a00", "Ending…"),
     Conn.ENDED: ("#888888", "Session ended"),
 }
 
@@ -78,7 +79,7 @@ class SessionPanel(QWidget):
         self.refresh()
 
     def end(self) -> None:
-        self.session.end()
+        self.session.finish()  # waits for the server to close open reactions (R11)
         self.refresh()
 
     def tick(self) -> None:
@@ -135,6 +136,12 @@ def status_text(s: Session) -> str:
         text += " Results below may be out of date."
     elif s.state is Conn.RECONNECTING:
         text += f" (attempt {s.attempt}). Results below may be out of date."
+    elif s.state is Conn.ENDING:
+        n = len(s.open_events)
+        text += (f" waiting for the server to close {n} open reaction(s)" if n
+                 else " waiting for the server to confirm")
+    elif s.state is Conn.ENDED and s.end_settled is False:
+        text += ": the server did not confirm in time; a reaction in progress at End may be incomplete"
     elif s.state is Conn.CONNECTED and s.reconnects:
         text += (f" — reconnected after {s.reconnects} drop(s); "
                  "audio captured while disconnected was not analysed")

@@ -115,7 +115,7 @@ This integration does not add empty service skeletons or invent new APIs.
 |---|---|---|
 | Contract | encore.v1 schema, six fixtures, delivery ordering, deduplication, generation handling | Media upload contract and review of draft decisions |
 | Content player | Open, play/pause, seek, speed, anchors | Real AEC/sensor pipeline integration and output latency correction |
-| Session | WebSocket connection, event delivery, reconnection that resumes after the last result and re-sends controls first (EM-20), logs | Real server session API, persistence (EM-29), delivering results still open at End |
+| Session | WebSocket connection, event delivery, reconnection that resumes after the last result and re-sends controls first, End that waits for open reactions to finish (EM-20), logs | Real server session API, persistence (EM-29) |
 | UI | Received event timeline, FINAL events ranked by intensity in Highlights, saved clip review | Event-to-exported-clip links, deletion, new sessions in the same window |
 | Sensing state | Camera/microphone capture shown as Off and unavailable; camera state model retained | Device callbacks and control contract integration |
 | Clips | Playback offered only for ready/partial entries with a real, nonempty file | EM-2 buffering, FFmpeg generation/verification, SQLite index |
