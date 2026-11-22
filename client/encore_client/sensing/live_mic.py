@@ -229,6 +229,11 @@ class QtAudioInput:
         self._reset_echo()
         self.mic.aec_status = "off"
 
+    def _device_duration_ms(self, byte_count: int) -> int:
+        # QAudioFormat.durationForBytes accepts only a signed 32-bit count.
+        frames = byte_count // self.format.bytesPerFrame()
+        return frames * 1000 // self.format.sampleRate()
+
     def _read(self) -> None:
         if self._io is not None:
             data = self._io.readAll().data()
@@ -240,19 +245,19 @@ class QtAudioInput:
                     if self._generation is not None:
                         self._reset_echo()
                     return
-                duration_us = self.format.durationForBytes(self._device_bytes + len(data))
+                elapsed_ms = self._device_duration_ms(self._device_bytes + len(data))
                 discontinuity = (self._capture_start_ms is not None and
-                                 abs(self._capture_start_ms + duration_us // 1000 - now) > RESYNC_MS)
+                                 abs(self._capture_start_ms + elapsed_ms - now) > RESYNC_MS)
                 if self._generation != sensor.generation or discontinuity:
                     self._reset_echo()
+                    elapsed_ms = self._device_duration_ms(len(data))
                 self._generation = sensor.generation
                 if self._capture_start_ms is None:
-                    self._capture_start_ms = now - self.format.durationForBytes(len(data)) // 1000
+                    self._capture_start_ms = now - elapsed_ms
                 self._device_bytes += len(data)
                 pcm = self.converter.convert(bytes(data))
                 # Qt callback timing may jitter even when device samples are contiguous.
-                end_ms = (self._capture_start_ms + self.format.durationForBytes(self._device_bytes) // 1000
-                          - self.converter.delay_ms)
+                end_ms = self._capture_start_ms + elapsed_ms - self.converter.delay_ms
                 if self.mic.player is None:
                     if pcm:
                         mic.feed(pcm, end_ms=end_ms)

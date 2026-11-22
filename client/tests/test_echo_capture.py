@@ -17,6 +17,37 @@ except (ImportError, ValueError):
 
 
 class RawTrackTest(unittest.TestCase):
+    def test_device_clock_continues_across_two_gibibytes(self):
+        # 48 kHz stereo float capture reaches 2 GiB after roughly 93 minutes.
+        rate, frame_bytes = 48_000, 8
+        device_block = bytes(480 * frame_bytes)
+        prior_bytes = (2**31 - 1) // len(device_block) * len(device_block)
+        prior_ms = prior_bytes // frame_bytes * 1000 // rate
+        origin = 1000
+
+        def duration_for_bytes(size):
+            if size > 2**31 - 1:
+                raise OverflowError("QAudioFormat.durationForBytes takes a signed 32-bit byte count")
+            return size // frame_bytes * 1_000_000 // rate
+
+        sensor = SimpleNamespace(enabled=True, generation=1)
+        session = SimpleNamespace(state=Conn.CONNECTED, view=SimpleNamespace(sensors={"microphone": sensor}))
+        ends = []
+        clock = iter((origin + prior_ms + 10, origin + prior_ms + 20))
+        capture = object.__new__(QtAudioInput)
+        capture.mic = SimpleNamespace(session=session, player=None, _clock=lambda: next(clock),
+                                      feed=lambda pcm, end_ms: ends.append(end_ms))
+        capture._io = SimpleNamespace(readAll=lambda: SimpleNamespace(data=lambda: device_block))
+        capture.format = SimpleNamespace(bytesPerFrame=lambda: frame_bytes, sampleRate=lambda: rate,
+                                         durationForBytes=duration_for_bytes)
+        capture.converter = SimpleNamespace(convert=lambda data: bytes(320), delay_ms=0)
+        capture._generation, capture._device_bytes, capture._capture_start_ms = 1, prior_bytes, origin
+
+        capture._read()
+        capture._read()
+        self.assertGreater(capture._device_bytes, 2**31 - 1)
+        self.assertEqual(ends, [origin + prior_ms + 10, origin + prior_ms + 20])
+
     def test_archive_gets_raw_and_mixed_chunk_is_never_reported_active(self):
         raw, uploaded = [], []
         session = SimpleNamespace(
@@ -65,7 +96,7 @@ class RawTrackTest(unittest.TestCase):
                              on_pcm=lambda raw, stamp: recording.append((raw, stamp)))
         capture = object.__new__(QtAudioInput)
         capture.mic = mic
-        capture.format = SimpleNamespace(durationForBytes=lambda size: size * 1000 // 96)
+        capture.format = SimpleNamespace(bytesPerFrame=lambda: 2, sampleRate=lambda: 48_000)
         reads = iter(bytes([v]) * 960 for v in (1, 2, 3))
         capture._io = SimpleNamespace(readAll=lambda: SimpleNamespace(data=lambda: next(reads)))
         capture.converter = SimpleNamespace(convert=bytes, delay_ms=0)
