@@ -211,7 +211,10 @@ class DeletionManager:
     # ---- cleanup steps ------------------------------------------------------------
 
     def _local_cleanup(self, op: Deletion) -> Deletion:
-        keep = self._files_in_use(exclude=op.clip_id)
+        try:
+            keep = self._files_in_use(exclude=op.clip_id)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            return replace(op, error=f"cannot verify clip file references: {exc}")
         errors = []
         for rel in op.files:
             path = self._inside(rel)
@@ -236,11 +239,7 @@ class DeletionManager:
 
     def _files_in_use(self, exclude: str) -> set[Path]:
         used = set()
-        try:
-            clips = load_index(self.index_path)
-        except (OSError, ValueError, KeyError, TypeError):
-            return used
-        for c in clips:
+        for c in load_index(self.index_path, required=True):
             if c.clip_id == exclude or c.clip_id in self.ops:
                 continue
             for rel in (c.path, c.thumbnail, *c.temp_paths):

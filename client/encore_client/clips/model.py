@@ -97,9 +97,12 @@ def effective_label(clip: Clip, base_dir: Path) -> str:
     return label
 
 
-def load_index(index_path: Path) -> list[Clip]:
+def load_index(index_path: Path, *, required: bool = False) -> list[Clip]:
     """Read the local clip index (JSON). To be replaced by the SQLite index (Specification III-B)."""
-    if not index_path.is_file():
+    if not required and not index_path.is_file():
         return []
     data = json.loads(index_path.read_text(encoding="utf-8"))
-    return [Clip.from_dict(d) for d in data.get("clips", [])]
+    entries = data["clips"] if required else data.get("clips", [])
+    if not isinstance(entries, list):
+        raise ValueError("clip index entries must be a list")
+    return [Clip.from_dict(d) for d in entries]

@@ -236,6 +236,29 @@ def test_a_failed_local_delete_stays_pending_and_is_retried(tmp_path, monkeypatc
     assert dm.state("c1").completed and not (tmp_path / "c1.mp4").exists()
 
 
+@pytest.mark.parametrize("damage", ["unreadable", "missing", "missing_entries"])
+def test_retry_preserves_shared_media_until_index_can_be_read(tmp_path, damage):
+    shared = "shared.mp4"
+    index = setup(tmp_path, [entry("c1", shared, ["evt-1"]), entry("c2", shared, ["evt-2"])],
+                  (shared,))
+    saved = index.read_bytes()
+
+    def interrupt(_clip_id):
+        if damage == "missing":
+            index.unlink()
+        else:
+            index.write_text("{" if damage == "unreadable" else "{}")
+
+    dm = manager(index, cancel_export=interrupt)
+    op = dm.delete("c1")
+    assert not op.completed
+    assert (tmp_path / shared).is_file()
+    index.write_bytes(saved)
+    resumed = manager(index)
+    assert resumed.state("c1").completed
+    assert playable_path(clip_of(resumed, "c2"), tmp_path) == tmp_path / shared
+
+
 def test_unknown_clip_and_damaged_journal(tmp_path):
     index = setup(tmp_path, [entry("c1", "c1.mp4", ["evt-0006"])])
     with pytest.raises(KeyError):
