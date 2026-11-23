@@ -1,4 +1,10 @@
-"""PySide6 panel: session Start/End, connection status and received events."""
+"""PySide6 panel: session Start/End, connection status and received events.
+
+After End, Start may begin a new session in the same run (R11, repeat
+Start/End). The panel only shows that it can: whoever made the session
+(``ui.workspace.Workspace``) creates the next one and hands it over with
+``use_session()``.
+"""
 
 from __future__ import annotations
 
@@ -33,11 +39,14 @@ STATUS = {
 
 class SessionPanel(QWidget):
     def __init__(self, session: Session, driver: ScenarioDriver | None = None, parent=None,
-                 require_anchor: bool = False) -> None:
+                 require_anchor: bool = False, restartable: bool = False) -> None:
+        """``restartable``: after End, Start stays enabled for a new session.
+        The button's owner then replaces the session before starting it."""
         super().__init__(parent)
         self.session = session
         self.driver = driver
         self.require_anchor = require_anchor
+        self.restartable = restartable
         self._shown_rows: list[dict] | None = None
 
         self.start_btn = QPushButton("Start session")
@@ -53,12 +62,13 @@ class SessionPanel(QWidget):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.counts = QLabel()
         self.counts.setWordWrap(True)
+        self.title = QLabel()
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.start_btn)
         buttons.addWidget(self.end_btn)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"Session <b>{session.session_id}</b>"))
+        layout.addWidget(self.title)
         layout.addLayout(buttons)
         layout.addWidget(self.status)
         layout.addWidget(self.table, 1)
@@ -72,7 +82,17 @@ class SessionPanel(QWidget):
         self.timer.start()
         self.refresh()
 
+    def use_session(self, session: Session) -> None:
+        """Show a new session: its ID, its status and its (empty) event list."""
+        self.session = session
+        self.driver = None  # a scenario drives exactly one session
+        self._shown_rows = None
+        self.table.clearSelection()
+        self.refresh()
+
     def start(self) -> None:
+        if self.session.state is not Conn.IDLE:
+            return  # after End, the owner hands over a new session first
         if self.require_anchor and self.session.last_anchor is None:
             return
         self.session.start()
@@ -91,10 +111,14 @@ class SessionPanel(QWidget):
     def refresh(self) -> None:
         s = self.session
         ready = not self.require_anchor or s.last_anchor is not None
-        self.start_btn.setEnabled(s.state is Conn.IDLE and ready)
-        self.start_btn.setToolTip("Open a video before starting." if not ready else "")
+        again = s.state is Conn.ENDED and self.restartable
+        self.start_btn.setEnabled((s.state is Conn.IDLE or again) and ready)
+        self.start_btn.setToolTip("Open a video before starting." if not ready
+                                  else "Start a new session with a new ID." if again else "")
         self.end_btn.setEnabled(s.state in STARTED)
-        self.status.setText(f'<span style="color:{STATUS[s.state][0]}; font-weight:600">● {status_text(s)}</span>')
+        self.title.setText(f"Session <b>{s.session_id}</b>")
+        hint = ". Start session begins a new one." if again else ""
+        self.status.setText(f'<span style="color:{STATUS[s.state][0]}; font-weight:600">● {status_text(s)}{hint}</span>')
 
         rows = event_rows(s.view)
         if rows != self._shown_rows:

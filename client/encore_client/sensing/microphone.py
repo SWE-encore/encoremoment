@@ -11,6 +11,8 @@ Turning the microphone off during a session
 Turning it on again starts a new generation. The camera is never touched.
 The device follows the session's microphone sensor, so the microphone that
 Start turns on (``Session(microphone_on_start=True)``) also opens the device.
+A new session after End (``use_session``) starts with the device closed and
+its own generations (R11).
 """
 from __future__ import annotations
 
@@ -92,6 +94,13 @@ class MicrophoneSwitch:
             return False
         self.session.set_sensor("microphone", True)
         return True
+
+    def use_session(self, session) -> None:
+        """Follow a new session after End (R11). The device is closed until
+        that session turns its microphone on; an old device error is cleared."""
+        self._stop_device()
+        self.session = session
+        self.error = None
 
     def sync(self) -> None:
         """Keep the device in step with the sensor and the session (call on a timer).

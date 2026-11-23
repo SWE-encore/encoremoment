@@ -7,7 +7,8 @@ shown with known audio. To the session it behaves like a microphone:
   is off;
 - each chunk carries the capture time of its first sample on the PC
   monotonic clock, and is handed over only once that much time has passed;
-- echo cancellation is reported as ``off``, because nothing is cancelled.
+- echo cancellation is reported as ``off``, because nothing is cancelled;
+- a new session after End (``use_session``) plays the file again from the start.
 
 Input must already be mono 16 kHz 16-bit PCM, the contract's audio format.
 Convert other files with ``ffmpeg -i IN -ac 1 -ar 16000 -sample_fmt s16 OUT.wav``.
@@ -55,6 +56,13 @@ class WavMicrophone:
         self._clock = clock
         self.on_pcm = on_pcm
         self._run: tuple[int, int, int] | None = None  # (generation, start ms, start pos)
+
+    def use_session(self, session) -> None:
+        """Play the file again, from the start, into a new session (R11: repeat Start/End)."""
+        self.session = session
+        self.pos = 0
+        self.sent = 0
+        self._run = None
 
     @property
     def done(self) -> bool:

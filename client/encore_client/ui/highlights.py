@@ -81,6 +81,13 @@ class HighlightsPanel(QWidget):
                 self._index_clips = []
         return self._index_clips
 
+    def use_session(self, session) -> None:
+        """Show a new session's highlights (R11). Saved clips stay in the index."""
+        self.session = session
+        self._shown = None
+        self.table.setCurrentCell(-1, -1)
+        self.refresh()
+
     def refresh(self) -> None:
         self.items = build_highlights(self.session.view, self._clips(), self.index_path.parent)
         if self.items == self._shown:
