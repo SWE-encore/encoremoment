@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import deque
 from typing import Callable
 
-from ..platform_support import native_microphone_format
+from ..platform_support import microphone_buffer_ms, native_microphone_format
 
 from ..clock import monotonic_ms
 from ..session.contract import AUDIO_RATE
@@ -250,7 +250,8 @@ class QtAudioInput:
         self.mic = mic
         self.device = device
         self.source = QAudioSource(device, fmt)
-        self.source.setBufferSize(fmt.bytesForDuration(500_000))  # 0.5 s in device format
+        # In device format. On Linux this is also the read period (platform_support).
+        self.source.setBufferSize(fmt.bytesForDuration(microphone_buffer_ms() * 1000))
         self._io = None
 
     def _reset_echo(self):
