@@ -4,7 +4,11 @@ Serves ``/v1/sessions/<session_id>/stream`` (contracts/README.md): text
 frames are PC messages, binary frames are audio. On connect the PC first gets
 every committed result after ``?after=<cursor>`` (default 0), so a PC that
 reconnects catches up (R11). A normal close (code 1000, the PC's End) ends
-the session; a dropped connection leaves it open for a reconnect.
+the session; a dropped connection leaves it open for a reconnect for
+``lease_s`` seconds. If the PC is not back by then (it pressed End while
+offline, or it is gone), the server ends the session as End would, so open
+reactions get their FINAL, and forgets it: a later connection starts a new
+session, which the PC reports as lost.
 
 The live session and replay cursor are process-local. When history is enabled,
 FINAL metadata is archived in PostgreSQL and available through the history route.
@@ -35,6 +39,7 @@ PATH = re.compile(r"^/v1/sessions/([A-Za-z0-9_-]{4,64})/stream$")
 HISTORY_PATH = re.compile(r"^/v1/sessions/([A-Za-z0-9_-]{4,64})/events$")
 POLL_S = 0.5
 MAX_MESSAGE = 1 << 20
+LEASE_S = 60.0  # a dropped session waits this long; the PC retries every 10 s at most
 
 
 class EncoreServer:
@@ -49,6 +54,7 @@ class EncoreServer:
         quiet_ms: int = TabRules.quiet_ms,
         say: Callable[[str], None] = lambda line: None,
         idle_s: float = IDLE_S,
+        lease_s: float = LEASE_S,
         on_frame: Callable[[str, Frame], None] | None = None,
     ) -> None:
         """``on_frame(session_id, frame)``: every analysed frame, for debugging tools.
@@ -61,10 +67,12 @@ class EncoreServer:
         self.config = config or DetectorConfig()
         self.say = say
         self.idle_s = idle_s
+        self.lease_s = lease_s
         self.on_frame = on_frame
         self.sessions: dict[str, ServerSession] = {}
         self._active: dict[str, Any] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._leases: dict[str, asyncio.Task] = {}  # dropped sessions waiting for their PC
 
     async def run(self, host: str, port: int, *, unix_socket: str | None = None) -> None:
         options = dict(process_request=self.check_path, max_size=MAX_MESSAGE)
@@ -85,6 +93,9 @@ class EncoreServer:
 
     async def finish_history(self) -> None:
         """After all WS handlers exit, finalize and drain known sessions on orderly stop."""
+        for lease in self._leases.values():
+            lease.cancel()  # the sessions they wait for are finalized here
+        self._leases.clear()
         if self.archive is None:
             return
         stage_failure = None
@@ -146,6 +157,9 @@ class EncoreServer:
             after = int(parse_qs(url.query).get("after", ["0"])[0])
         except ValueError:
             after = 0
+        lease = self._leases.pop(sid, None)
+        if lease is not None:
+            lease.cancel()  # its PC is back in time
         session = self.sessions.get(sid)
         if session is None:
             watch = (lambda frame, sid=sid: self.on_frame(sid, frame)) if self.on_frame else None
@@ -204,7 +218,31 @@ class EncoreServer:
                             await self.archive.notify(session)
                     self.say(f"{sid}: session ended")
                 else:
-                    self.say(f"{sid}: connection dropped ({ws.close_code}); kept for a reconnect")
+                    self.say(f"{sid}: connection dropped ({ws.close_code}); kept {self.lease_s:g} s for a reconnect")
+                    self._leases[sid] = asyncio.create_task(self._expire(sid, session))
+
+    async def _expire(self, sid: str, session: ServerSession) -> None:
+        """End a dropped session whose PC did not reconnect within the lease (R11)."""
+        await asyncio.sleep(self.lease_s)
+        if self._leases.get(sid) is not asyncio.current_task():
+            return
+        del self._leases[sid]
+        if sid in self._active or self.sessions.get(sid) is not session:
+            return
+        # Forget it before anything awaits, so a connection from now on starts a new session.
+        del self.sessions[sid]
+        lock = self._locks.pop(sid)
+        try:
+            async with lock:
+                for msg in session.end():
+                    self._report(sid, msg)
+                if self.archive:
+                    await self.archive.notify(session)
+                    self.archive.forget(sid)
+        except OutboxUnavailable:
+            self.say(f"{sid}: local history outbox unavailable; the expired session's FINALs were not archived")
+            return
+        self.say(f"{sid}: no reconnect within {self.lease_s:g} s; session ended")
 
     def _report(self, sid: str, msg: dict[str, Any]) -> None:
         if msg["kind"] == "control_ack":
