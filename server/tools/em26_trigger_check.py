@@ -11,6 +11,15 @@ windowing, face pairing and 5 s fusion (``fusion.py``).
 
     .venv/bin/python server/tools/em26_trigger_check.py [--runs N] [--realtime] [--json]
 
+Real models: ``--audio-model yamnet`` with ``--wav LABEL=FILE`` (mono 16 kHz
+PCM16, repeatable) replaces the scripted cases. A file labelled ``laughter``
+expects an OPEN; any other label expects none. Each file plays after 2 s of
+silence and is followed by 3 s of silence, once with the camera off, once with
+a neutral face and once smiling (.20) while it plays; those faces are scripted.
+``--face-python``/``--face-task`` use the real MediaPipe worker instead, on
+blank frames (camera on, no face found), and drop the scripted face runs.
+Needs server/requirements-yamnet.txt; TFHUB_CACHE_DIR picks the YAMNet copy.
+
 Times are on the PC capture clock. Without ``--realtime`` the clock is
 simulated: a chunk reaches the server when its last sample is captured, plus
 the measured time ``on_audio`` took (no network). With ``--realtime`` chunks
@@ -23,12 +32,16 @@ expectation.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.metadata
 import json
 import platform
 import statistics
 import struct
+import subprocess
 import sys
 import time
+import wave
 from array import array
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +58,7 @@ CHUNK_MS = 500
 CHUNK_SAMPLES = RATE * CHUNK_MS // 1000
 FRAME_MS = 480  # the PC pairs a chunk with its newest camera frame, ~20 ms before the chunk ends
 T0 = 10_000  # capture clock at the first sample (simulated runs)
+WAV_AT_MS, WAV_TAIL_MS = 2_000, 3_000  # silence before and after a recorded input
 CENTRE_MS = WINDOW_MS // 2  # a hop's trigger time is its window's centre
 
 
@@ -97,12 +111,14 @@ class Case:
     smile: dict[int, float | None] = field(default_factory=dict)  # hop -> smile (default 0, neutral face)
     expect_hop: int | None = None  # hop whose window should OPEN
     onset_hop: int | None = None  # first hop of the reaction, for onset -> OPEN
+    onset_ms: int | None = None  # or the reaction's start after the first sample
     camera: bool = True
     no_face: bool = False
     frame_offset_ms: int = FRAME_MS  # image time relative to its chunk's first sample
     frames: str = "own"  # own: chunk c carries frame c; late: frame c-1; twice: frame c - c % 2
     resend: bool = False  # every packet is sent twice
     chunks: int = 16
+    wav: bytes | None = None  # recorded PCM16 at WAV_AT_MS, silence around it; replaces ``audio``
 
 
 QUIET, WEAK, STRONG = .01, .10, .30
@@ -142,12 +158,41 @@ CASES = [
 ]
 
 
+def read_wav(path: Path) -> bytes:
+    with wave.open(str(path), "rb") as w:
+        if (w.getnchannels(), w.getframerate(), w.getsampwidth()) != (1, RATE, 2):
+            raise SystemExit(f"{path}: need mono {RATE} Hz 16-bit PCM WAV")
+        return w.readframes(w.getnframes())
+
+
+def wav_cases(label: str, path: Path, real_face: bool) -> list[Case]:
+    """Camera off, then a neutral face and a smile (scripted) or blank frames (real face model)."""
+    pcm = read_wav(path)
+    laughter = label == "laughter"
+    end_ms = WAV_AT_MS + len(pcm) // 2 * 1000 // RATE
+    common = dict(wav=pcm, onset_ms=WAV_AT_MS, chunks=-(-(end_ms + WAV_TAIL_MS) // CHUNK_MS))
+    what = f"{label}: {path.name}"
+    cases = [Case(f"{path.stem}/camera-off", f"{what}, camera off", laughter, camera=False, **common)]
+    if real_face:
+        return cases + [Case(f"{path.stem}/no-face", f"{what}, camera on, blank frames", laughter, **common)]
+    smile = span(hop_of(T0 + WAV_AT_MS, T0), hop_of(T0 + end_ms - 1, T0), SMILE)
+    return cases + [Case(f"{path.stem}/neutral", f"{what}, neutral face", laughter, **common),
+                    Case(f"{path.stem}/smile", f"{what}, smiling while it plays", laughter, smile=smile, **common)]
+
+
 def hop_of(t: float, t0: float) -> int:
     """The hop whose face bin holds capture time ``t`` (bins are centred on window centres)."""
     return int((t - t0 - CENTRE_MS + HOP_MS // 2) // HOP_MS)
 
 
 def pcm_for(case: Case, t0: int, chunk: int) -> bytes:
+    if case.wav is not None:
+        pcm = bytearray(2 * CHUNK_SAMPLES)
+        first, at = chunk * CHUNK_SAMPLES, WAV_AT_MS * RATE // 1000
+        lo, hi = max(first, at), min(first + CHUNK_SAMPLES, at + len(case.wav) // 2)
+        if lo < hi:
+            pcm[2 * (lo - first):2 * (hi - first)] = case.wav[2 * (lo - at):2 * (hi - at)]
+        return bytes(pcm)
     samples = array("h")
     start = t0 + chunk * CHUNK_MS
     for j in range(CHUNK_SAMPLES):
@@ -183,7 +228,7 @@ def control(session: ServerSession, sensor: str, seq: int, capture_ms: int) -> N
 
 def run_case(case: Case, *, realtime: bool = False, audio_model=None, face_model=None) -> dict:
     audio = Timed(audio_model or ScriptedAudio())
-    face = Timed(face_model or ScriptedFace())
+    face = Timed(face_model or ScriptedFace())  # each case times its own calls
     session = ServerSession("em26", audio, face_model=face)
     fusion = session.detector.fusion
     trace, credited, doubled = [], set(), []
@@ -231,7 +276,12 @@ def run_case(case: Case, *, realtime: bool = False, audio_model=None, face_model
     session.end()
 
     actual_hop = None
+    rules = session.tab_rules
+    scores = [r["audio"] for r in trace]
     result = {"case": case.name, "what": case.what, "expect_open": case.expect_open, "open": bool(opens),
+              "max_laughter": max(scores, default=0),
+              "strong_hops": sum(s >= rules.strong_audio for s in scores),
+              "weak_hops": sum(rules.assisted_audio * rules.release_ratio <= s < rules.strong_audio for s in scores),
               "expect_hop": case.expect_hop, "open_hop": None, "trigger_to_open_ms": None,
               "onset_to_open_ms": None, "max_evidence_s": max((r["evidence_s"] for r in trace), default=0),
               "doubled_hops": doubled, "events": len(opens),
@@ -242,9 +292,11 @@ def run_case(case: Case, *, realtime: bool = False, audio_model=None, face_model
         actual_hop = (trigger - t0 - CENTRE_MS) // HOP_MS
         result.update(open_hop=actual_hop, trigger_to_open_ms=round(received - trigger, 1),
                       model=event["source"]["model"], config=event["source"]["config"])
-        if case.onset_hop is not None:
-            onset = t0 + case.onset_hop * HOP_MS + CENTRE_MS - HOP_MS // 2
-            result["onset_to_open_ms"] = round(received - onset, 1)
+        onset = case.onset_ms
+        if onset is None and case.onset_hop is not None:
+            onset = case.onset_hop * HOP_MS + CENTRE_MS - HOP_MS // 2
+        if onset is not None:
+            result["onset_to_open_ms"] = round(received - t0 - onset, 1)
     result["ok"] = (bool(opens) == case.expect_open and not doubled
                     and (case.expect_hop is None or actual_hop == case.expect_hop))
     result["trace"] = trace
@@ -257,8 +309,8 @@ def _stats(values):
     return {"n": len(values), "median": round(statistics.median(values), 2), "max": round(max(values), 2)}
 
 
-def header(rules: TabRules) -> dict:
-    return {"thresholds": {"strong_audio": rules.strong_audio, "assisted_audio": rules.assisted_audio,
+def header(rules: TabRules, audio_name: str, face_name: str) -> dict:
+    return {"audio_model": audio_name, "face_model": face_name, "thresholds": {"strong_audio": rules.strong_audio, "assisted_audio": rules.assisted_audio,
                            "smile": rules.smile, "release_ratio": rules.release_ratio,
                            "window_ms": rules.window_ms, "equivalent_hops": rules.equivalent_hops,
                            "target_s": rules.equivalent_hops * HOP_MS / 1000, "quiet_ms": rules.quiet_ms},
@@ -273,21 +325,27 @@ def _median(values, digits=0):
 
 def print_table(info: dict, results: list[list[dict]], args) -> None:
     t = info["thresholds"]
-    print(f"models: {ScriptedAudio.name} + {ScriptedFace.name}; strong {t['strong_audio']}, "
+    print(f"models: {info['audio_model']} + {info['face_model']}; strong {t['strong_audio']}, "
           f"assisted {t['assisted_audio']}, smile {t['smile']}, release x{t['release_ratio']}, "
           f"{t['window_ms']} ms window, target {t['target_s']} s; hop {HOP_MS} ms, chunk {CHUNK_MS} ms; "
           f"runs {args.runs}{', realtime' if args.realtime else ', simulated clock'}")
     print(f"{'case':30} {'expect':>6} {'actual':>6} {'hop e/a':>7} {'trig->OPEN':>10} {'onset->OPEN':>11}"
-          f" {'evid s':>6} {'audio ms':>8} {'face ms':>7}  ok")
+          f" {'laugh max':>9} {'strong/weak hops':>16} {'evid s':>6} {'audio ms':>8} {'face ms':>7}  ok")
     for runs in results:
         r = runs[0]
         hops = f"{'-' if r['expect_hop'] is None else r['expect_hop']}/{'-' if r['open_hop'] is None else r['open_hop']}"
         print(f"{r['case']:30} {'OPEN' if r['expect_open'] else '-':>6} {'OPEN' if r['open'] else '-':>6}"
               f" {hops:>7} {_median([x['trigger_to_open_ms'] for x in runs]):>10}"
-              f" {_median([x['onset_to_open_ms'] for x in runs]):>11} {r['max_evidence_s']:6.2f}"
+              f" {_median([x['onset_to_open_ms'] for x in runs]):>11} {r['max_laughter']:9.3f}"
+              f" {str(r['strong_hops']) + '/' + str(r['weak_hops']):>16} {r['max_evidence_s']:6.2f}"
               f" {_median([(x['audio_ms'] or {}).get('median') for x in runs], 2):>8}"
               f" {_median([(x['face_ms'] or {}).get('median') for x in runs], 2):>7}"
               f"  {'ok' if all(x['ok'] for x in runs) else 'FAIL'}")
+    flat = [x for runs in results for x in runs]
+    laughs = [x for x in flat if x["expect_open"]]
+    others = [x for x in flat if not x["expect_open"]]
+    print(f"misses: {sum(not x['open'] for x in laughs)} of {len(laughs)} runs expecting OPEN; "
+          f"false positives: {sum(x['open'] for x in others)} of {len(others)} runs expecting none")
 
 
 def main(argv=None) -> int:
@@ -295,10 +353,45 @@ def main(argv=None) -> int:
     ap.add_argument("--runs", type=int, default=1, help="repeat each case (latency statistics)")
     ap.add_argument("--realtime", action="store_true", help="send chunks at their real capture times")
     ap.add_argument("--json", action="store_true", help="print JSON instead of a table")
+    ap.add_argument("--audio-model", choices=("scripted", "yamnet"), default="scripted")
+    ap.add_argument("--wav", action="append", default=[], metavar="LABEL=FILE",
+                    help="recorded input (mono 16 kHz PCM16); LABEL laughter expects an OPEN")
+    ap.add_argument("--face-python", help="Python inside the MediaPipe environment")
+    ap.add_argument("--face-task", help="face_landmarker.task")
     args = ap.parse_args(argv)
+    if bool(args.wav) != (args.audio_model != "scripted"):
+        ap.error("--wav goes with a real --audio-model, and a real model needs --wav inputs")
+    if bool(args.face_python) != bool(args.face_task) or (args.face_task and not args.wav):
+        ap.error("--face-python and --face-task go together, with --wav")
 
-    results = [[run_case(c, realtime=args.realtime) for _ in range(args.runs)] for c in CASES]
-    info = header(TabRules())
+    audio_model = face_model = None
+    audio_name, face_name = ScriptedAudio.name, ScriptedFace.name
+    cases = CASES
+    if args.wav:
+        from encore_server.models import YamnetModel
+        audio_model = YamnetModel()
+        audio_name = (f"{audio_model.name} (tensorflow {importlib.metadata.version('tensorflow')}, "
+                      f"tensorflow-hub {importlib.metadata.version('tensorflow-hub')})")
+        cases = []
+        for item in args.wav:
+            label, _, path = item.partition("=")
+            if not path:
+                ap.error(f"--wav {item!r}: use LABEL=FILE")
+            cases += wav_cases(label, Path(path), bool(args.face_task))
+    if args.face_task:
+        from encore_server.vision import FaceWorker
+        version = subprocess.run([args.face_python, "-c", "import mediapipe; print(mediapipe.__version__)"],
+                                 capture_output=True, text=True, check=True).stdout.strip()
+        digest = hashlib.sha256(Path(args.face_task).read_bytes()).hexdigest()[:12]
+        face_model = FaceWorker(args.face_python, args.face_task)
+        face_name = face_model.name = f"mediapipe {version} {Path(args.face_task).name} sha256 {digest}"
+    try:
+        results = [[run_case(c, realtime=args.realtime, audio_model=audio_model, face_model=face_model)
+                    for _ in range(args.runs)] for c in cases]
+    finally:
+        if face_model is not None:
+            face_model.close()
+    info = header(TabRules(), audio_name, face_name)
     if args.json:
         print(json.dumps({"setup": info, "runs": args.runs, "realtime": args.realtime,
                           "cases": [r for runs in results for r in runs]}, indent=1))
