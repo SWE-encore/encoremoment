@@ -44,6 +44,20 @@ class LiveMicrophone:
         self._run: list[int] | None = None  # [generation, first sample ms, bytes taken from the run]
         self._skip = 0  # bytes still to discard after the device started
 
+    def use_session(self, session) -> None:
+        """Feed a new session after End (R11). Nothing captured for the previous
+        session carries over: buffered PCM, the recording, the connection and
+        the echo cancellation status start again."""
+        self.session = session
+        self._reset_run()
+        self._connection = None
+        self._skip = 0
+        self.aec_status = "reference_unavailable" if self.player else "off"
+        self.sent = 0
+        self.recording = bytearray()
+        self.last_pcm = b""
+        self.zero_ms = 0
+
     def device_started(self, settle_ms: int = SETTLE_MS) -> None:
         """The device just opened: discard its first ``settle_ms`` of audio."""
         self._skip = AUDIO_RATE * settle_ms // 1000 * 2
