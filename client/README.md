@@ -37,6 +37,19 @@ python3 -m venv --system-site-packages .venv   # system site packages provide Py
 
 `gstreamer1.0-libav` is optional but widens codec support. Without it, H.264 uses `openh264dec`/`vah264dec` and AAC uses `faad` from the other plugin sets.
 
+## Platforms
+
+`encore_client/platform_support.py` makes every OS decision; no other module reads `sys.platform` (`tests/test_platform_support.py` checks this).
+
+| Feature | Linux (Ubuntu 24.04) | macOS |
+|---|---|---|
+| Live microphone (`--mic`) | Qt at 16 kHz | Native format, resampled with soxr (Qt's 16 kHz path lost ~27% of the audio, #40) |
+| Audience-camera recorder and clips | GStreamer `v4l2src` | Not available; the camera panel says so |
+| Content player (GStreamer) | Yes | Not set up; use `--no-player` |
+| Session, highlights, saved clips, test bench | Yes | Yes |
+
+macOS setup that has been used: Python 3.12 (`PySide6==6.8.3` has no wheel for 3.13+), `brew install ffmpeg`, then `python3.12 -m venv .venv` and the install below. On a MacBook Air (2026-11-24) the client tests gave 247 passed, 1 failed (the restart window test, fixed with this table), 12 skipped: ten need PyGObject/GStreamer, one ffmpeg, one the GStreamer WebRTC echo plugins.
+
 ## Run
 
 ```sh

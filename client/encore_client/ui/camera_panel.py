@@ -27,6 +27,7 @@ class CameraPanel(QWidget):
     def __init__(self, camera: CameraControl | None, parent=None) -> None:
         super().__init__(parent)
         self.camera = camera
+        self.unavailable_reason: str | None = None
         self.indicator = QLabel()
         self.detail = QLabel()
         self.detail.setWordWrap(True)
@@ -45,6 +46,11 @@ class CameraPanel(QWidget):
         layout.addWidget(self.detail)
         self.refresh()
 
+    def set_unavailable_reason(self, reason: str | None) -> None:
+        """Say why there is no camera (e.g. the OS has no recorder) instead of only 'unavailable'."""
+        self.unavailable_reason = reason
+        self.refresh()
+
     def enable(self) -> None:
         if self.camera is not None:
             self.camera.enable()
@@ -59,7 +65,8 @@ class CameraPanel(QWidget):
         cam = self.camera
         if cam is None:
             # No media-layer camera device yet: say so instead of pretending.
-            self.indicator.setText(UNAVAILABLE_TEXT)
+            self.indicator.setText(UNAVAILABLE_TEXT + (f" ({self.unavailable_reason})"
+                                                        if self.unavailable_reason else ""))
             self.enable_btn.setVisible(False)
             self.stop_btn.setVisible(False)
             self.detail.setVisible(False)
