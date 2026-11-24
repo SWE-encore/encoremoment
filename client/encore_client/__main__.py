@@ -163,7 +163,8 @@ def main(argv=None):
         from .ui.workspace import Workspace
         app = QApplication.instance() or QApplication(sys.argv[:1])
         recorder_factory = None
-        if scenario is None and sys.platform.startswith("linux"):
+        from .platform_support import camera_unavailable_reason, desktop_capture
+        if scenario is None and desktop_capture():
             from .clips.recorder import DesktopRecorder
             recorder_factory = DesktopRecorder
         index_path = args.clip_index or (ROOT / "samples/clip_index.json" if args.demo
@@ -172,6 +173,8 @@ def main(argv=None):
                               require_anchor=scenario is None and not mic_clock, demo=scenario is not None,
                               recorder_factory=recorder_factory,
                               session_factory=maker if scenario is None else None)
+        if scenario is None and not desktop_capture():
+            workspace.camera_panel.set_unavailable_reason(camera_unavailable_reason())
         if args.no_player:
             win = QMainWindow()
             win.setCentralWidget(workspace)

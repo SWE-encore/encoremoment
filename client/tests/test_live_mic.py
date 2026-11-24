@@ -209,7 +209,7 @@ def test_macos_captures_the_native_format_even_when_16khz_is_offered(monkeypatch
     from encore_client.sensing import live_mic
     QApplication.instance() or QApplication([])
     native = audio_format(48_000, 1, "Float")
-    monkeypatch.setattr(live_mic.sys, "platform", platform)
+    monkeypatch.setattr(live_mic, "native_microphone_format", lambda: platform == "darwin")
     with patch("PySide6.QtMultimedia.QAudioSource") as source:
         live_mic.QtAudioInput(LiveMicrophone(FakeSession()), _Offers16kAndNative(native))
     requested = source.call_args.args[1]
