@@ -198,7 +198,7 @@ The player tests generate their own clips with ffmpeg, play them headless, and c
 
 ## Known limits and risks
 
-- **Echo cancellation plugin missing on Ubuntu 24.04.** `gstreamer1.0-plugins-bad` 1.24.2 there does not ship `webrtcdsp`/`webrtcechoprobe`, and no other apt package provides them. R1 needs them: build that plugin from source against `libwebrtc-audio-processing`, use a distribution that packages it, or choose another echo-cancel route (for example PipeWire's echo-cancel module). This decision belongs to R1 (EM-10).
+- **Echo cancellation plugin missing on Ubuntu 24.04.** `gstreamer1.0-plugins-bad` 1.24.2 there does not ship `webrtcdsp`/`webrtcechoprobe`, and no other apt package provides them. R1 needs them: build that plugin from source against `libwebrtc-audio-processing`, use a distribution that packages it, or choose another echo-cancel route (for example PipeWire's echo-cancel module). This decision belongs to R1 (EM-10). Homebrew GStreamer 1.28.9 on macOS lacks them too. `docs/em-10-aec-evaluation.md` measures the alternatives with YAMNet: WebRTC AEC3 (`pywebrtc-audio`) suppresses laughter during playback, while the linear canceller in `encore_client/sensing/linear_aec.py` (not wired in yet) keeps most of it.
 - Anchor capture time is taken when GStreamer reports the change, without subtracting audio output latency (typically tens of ms). The 10 s heartbeat bounds drift.
 - Frames are copied into Qt as RGBx at full resolution. Fine for 1080p; 4K would need GL rendering or downscaling in `VIDEO_CAPS`.
 - A paused frame can be about two frames ahead of the reported position because of the sink's one-buffer queue.
