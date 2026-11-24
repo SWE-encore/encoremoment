@@ -34,6 +34,53 @@ STATUS_LABEL = {
 
 PLAYABLE_STATUSES = {ClipStatus.READY, ClipStatus.PARTIAL}
 
+# Why a clip has no footage or only part of it. One table for every view (Highlights,
+# Saved clips, clip plans), keyed by the codes the recorder, crash recovery and the
+# contract's clip plan write to the ``reason`` field.
+REASON_TEXT = {
+    "camera_off": "camera was off",
+    "camera_stopped": "camera was stopped during the clip",
+    "unknown_camera_generation": "camera state unknown",
+    "before_camera_activation": "camera turned on late",
+    "no_footage": "no footage was recorded",
+    "too_many_pending_clips": "not recorded: too many clips were waiting",
+    "interrupted_capture": "recording stopped when the app closed",
+}
+NO_REASON = "export failed or no footage"
+MAX_REASON_CHARS = 80   # free-text export errors are shortened for one-line labels
+LISTED_GAPS = 3         # partial labels list at most this many missing ranges
+
+
+def reason_text(reason: str | None) -> str:
+    """Readable cause for a clip without (full) footage. Unknown codes are export errors."""
+    if not reason:
+        return NO_REASON
+    if reason in REASON_TEXT:
+        return REASON_TEXT[reason]
+    error = " ".join(reason.split())
+    if len(error) > MAX_REASON_CHARS:
+        error = error[:MAX_REASON_CHARS - 1].rstrip() + "…"
+    return f"export failed: {error}"
+
+
+def _range(a: float, b: float) -> str:
+    return f"{a:g}–{b:g}s"
+
+
+def gap_summary(gaps) -> str:
+    """Short text for the missing ranges of a partial clip; stays one line for any count."""
+    if len(gaps) <= LISTED_GAPS:
+        return "missing: " + ", ".join(_range(a, b) for a, b in gaps)
+    total = sum(max(0.0, b - a) for a, b in gaps)
+    return f"missing {total:.1f} s in {len(gaps)} places"
+
+
+def gap_detail(gaps, limit: int = 10) -> str:
+    """Every missing range for a detail view, capped so a long list stays readable."""
+    shown = ", ".join(_range(a, b) for a, b in gaps[:limit])
+    more = len(gaps) - limit
+    return f"Missing ranges: {shown}" + (f" … and {more} more" if more > 0 else "")
+
 
 @dataclass
 class Clip:
@@ -55,6 +102,7 @@ class Clip:
     temp_paths: tuple[str, ...] = ()
 
     trim_ms: tuple[int, ...] = ()  # Default playback excludes the retained editing handles.
+    reason: str | None = None      # REASON_TEXT code, or an export error, for unavailable/partial
 
     @classmethod
     def from_dict(cls, d: dict) -> "Clip":
@@ -81,6 +129,7 @@ class Clip:
             thumbnail=d.get("thumbnail"),
             temp_paths=tuple(temp_paths),
             trim_ms=tuple(d.get("trim_ms", ())),
+            reason=d["reason"] if isinstance(d.get("reason"), str) else None,
         )
 
 
@@ -103,8 +152,9 @@ def effective_label(clip: Clip, base_dir: Path) -> str:
         return "❌ File missing"
     label = STATUS_LABEL[clip.status]
     if clip.status == ClipStatus.PARTIAL and clip.gaps:
-        gaps = ", ".join(f"{a:g}–{b:g}s" for a, b in clip.gaps)
-        label += f" (missing: {gaps})"
+        label += f" ({gap_summary(clip.gaps)})"
+    elif clip.status == ClipStatus.UNAVAILABLE:
+        label += f" ({reason_text(clip.reason)})"
     return label
 
 
