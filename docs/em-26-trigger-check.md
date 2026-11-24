@@ -104,24 +104,65 @@ Trigger → OPEN has three parts:
 
 The realtime run is slower per call because the CPU idles between chunks.
 
-So trigger → OPEN is 488–987 ms plus a few milliseconds, about 0.74 s on average. From the start of a reaction, strong laughter opens about 0.8 s later. Assisted laughter needs two more paired hops, so about 1.8 s. Not measured: the network to the EC2 server, and MediaPipe on a real face. The EC2 smoke test in `deploy/models/README.md` gives 12 ms for one portrait image.
+So on the server, trigger → OPEN is 488–987 ms plus a few milliseconds, about 0.74 s on average. From the start of a reaction, strong laughter opens about 0.8 s later. Assisted laughter needs two more paired hops, so about 1.8 s. With the real app in the loop it was 943 ms for a hop that the server alone would answer in about 0.5 s (section 6). Not measured: the network to the EC2 server. MediaPipe on a real face took 21 ms on this PC (section 6); the EC2 smoke test in `deploy/models/README.md` gives 12 ms for one portrait image.
 
-## 6. Findings
+## 6. Live run on this PC
+
+Two sessions on 2026-11-24 with the app (`encore_client --mic`), this PC's microphone and camera, and a local server running YAMNet and MediaPipe. There was no network: app and server were on the same PC. The server kept only the numbers from each scored window (scores, face found, model times). The app's clip and both logs were deleted right after each run. A cue script with timed steps (quiet, talking, loud laugh, silent smile, smile with a chuckle) was not started in either run. The results are therefore per session, not per step, and the smile scores are not checked against what the face was doing.
+
+| | Run 1 | Run 2 |
+|---|---|---|
+| Microphone | muted at the system level (noticed only afterwards) | on |
+| Length | 298 scored windows (about 2.4 min) | 118 s |
+| Camera frames paired with audio | 297 of 297 windows found a face | none |
+| Laughter events | 0; laughter 0.000 in every window | 1, on sound alone (confidence 0.32), during a loud laugh |
+| Other OPENs | 0 | 0, including while talking |
+
+**Model times with a real face** (run 1, per call):
+
+| | Median | p95 | Max |
+|---|---|---|---|
+| MediaPipe, per frame | 21.0 ms | 28.9 ms | 31.7 ms |
+| YAMNet, per window | 9.5 ms | 14.7 ms | 16.6 ms |
+| Server `on_audio`, per chunk with a window | 12 ms | 19 ms | 30 ms |
+
+**Smile scores** (run 1): 97 windows above 0.20, with a median of 0.76 and the lowest at 0.25. 189 windows below 0.20, with a 95th percentile of 0.019.
+
+**Trigger → OPEN, run 2**: 943 ms, measured on the PC's monotonic clock from the trigger time in the event to the moment the app logged the OPEN.
+
+| Part | Time |
+|---|---|
+| Half a window | 488 ms |
+| Waiting for the chunk | about 5 ms |
+| From the chunk's last sample to the server | about 351 ms |
+| Server processing | 19 ms |
+| From the server's reply to the app's log | about 80 ms |
+
+Three problems showed up in the app, not in the server's rule:
+
+1. **The app sends each audio chunk about 350 ms after it ends.** All 235 chunks in run 2 left the app 349–360 ms after their last sample. A likely cause: the app's microphone buffer is 0.5 s (`client/encore_client/sensing/live_mic.py`), so audio arrives in reads of about 0.5 s. The app also drops the first 150 ms (`SETTLE_MS`), so each chunk ends 350 ms before the read that completes it. This adds about 350 ms to every OPEN.
+2. **No camera frames reached the server in run 2.** The app sends a chunk with its newest camera frame only if that frame was captured during the chunk (`Session.send_audio`). If chunks leave 350 ms after they end, the newest frame is always too new. Frames did pair in run 1, so this cause is not proven. Run 2 therefore behaved like a run with the camera off, and the smile path was not tested live.
+3. **A silent microphone gives no warning.** In run 1 the microphone was muted at the system level. Every laughter score was 0.000 for the whole session, and nothing in the app showed it.
+
+## 7. Findings
 
 1. **The rule does what it says.** Every scripted case matches. Camera-off and no-face fall back to sound alone, repeated or late frames never credit a hop twice, and evidence older than 5 s drops out. No server change is needed for EM-26's rule checks.
 2. **Sound alone misses quieter laughs.** On this small public set, 2 of 5 laughing clips never reach 0.25. The smile path recovers both.
 3. **The smile path has little margin against non-laughter.** A crying baby with a smiling face came within 0.01 s of an OPEN. A labeled set of audience recordings (EM-11) is needed before changing 0.10 / 0.20 / 1.44 s.
 4. **One hop in 25 gets no face.** The PC sends one frame per 0.5 s chunk and hops are 0.48 s. When a hop's ±240 ms bin holds no frame, that hop earns no paired credit (hop 13 here). Sustained laughter loses about 4% of its evidence, and the delay barely changes.
 5. **Events do not say which face model was used.** `source.model` gets `+mediapipe-face` with no version or file hash, while `source.config` does record the thresholds. EM-11 asks for versioned models.
-6. **The models are not the delay.** Waiting for the 0.5 s chunk that completes the window adds 0–499 ms (about 250 ms on average), while the models take a few milliseconds. Smaller chunks would shorten the wait; the 488 ms half window stays.
+6. **The models are not the delay.** Waiting for the 0.5 s chunk that completes the window adds 0–499 ms (about 250 ms on average). The models take a few milliseconds, and MediaPipe takes 21 ms on a real face. Smaller chunks would shorten the wait; the 488 ms half window stays.
+7. **Live, the app adds the most delay.** A loud laugh opened on sound alone with no false OPEN while talking, but trigger → OPEN was 943 ms. About 350 ms of that was the app holding each chunk before sending it (section 6).
+8. **The live smile path depends on the app's frame pairing.** With the microphone on, no camera frames reached the server, so a weak laugh with a smile could not open (section 6).
 
 **Not done:**
 
-- A live run with this PC's microphone and camera (real smiles, real room sound, a real face for MediaPipe). It was set up but not run on 2026-11-24.
+- The smile path live: no camera frames reached the server in the run with the microphone on.
+- A live result per step (quiet, talking, laugh, smile): the cue script was not started.
 - Delay over the network to the EC2 server.
 - Scream and gasp.
 
-## 7. Reproduce
+## 8. Reproduce
 
 Scripted cases (no downloads):
 
@@ -143,3 +184,15 @@ TFHUB_CACHE_DIR=/path/to/tfhub /path/to/yamnet-venv/bin/python server/tools/em26
 ```
 
 `--json` prints every case with its per-hop trace: laughter score, smile and evidence.
+
+Live run: start a local server with both models, then the app with a log. The app asks for the microphone and camera, and with the camera on it saves clips next to `--clip-index`. Delete that folder afterwards.
+
+```bash
+cd server && TFHUB_CACHE_DIR=/path/to/tfhub /path/to/yamnet-venv/bin/python -m encore_server \
+  --model yamnet --host 127.0.0.1 --port 8799 \
+  --face-python /path/to/face-venv/bin/python --face-task /path/to/face_landmarker.task
+cd client && ../.venv/bin/python -m encore_client --server ws://127.0.0.1:8799 --mic --no-player \
+  --log /tmp/em26-live/client.jsonl --clip-index /tmp/em26-live/clips/clip_index.json
+```
+
+Trigger → OPEN is the `t_ms` of the OPEN line in the `--log` file minus the event's `capture.triggers_ms[0]`. Both are on the PC's monotonic clock. The per-window numbers in section 6 came from a small wrapper around `ServerSession.on_audio` that is not in the repository.
