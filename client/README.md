@@ -150,6 +150,24 @@ Stop closes the capture device immediately while waiting for final events.
 A lost server connection also stops capture, preserves the last recording for
 saving, and leaves the disconnect reason visible. Press Start to begin a new run.
 
+## Why a clip has no footage
+
+Highlights, Saved clips and the clip plan show one wording per `reason` code (`REASON_TEXT` in `clips/model.py`):
+
+| Code | Written by | Shown as |
+|---|---|---|
+| `camera_off` | recorder, clip plan | camera was off |
+| `camera_stopped` | recorder, clip plan | camera was stopped during the clip |
+| `unknown_camera_generation` | clip plan | camera state unknown |
+| `before_camera_activation` | clip plan (partial) | camera turned on late |
+| `no_footage` | recorder | no footage was recorded |
+| `too_many_pending_clips` | recorder | not recorded: too many clips were waiting |
+| `interrupted_capture` | crash recovery (`clips/storage.py`) | recording stopped when the app closed |
+| any other text | recorder export errors | `export failed: …`, one line of at most 80 characters |
+| none | older index rows | export failed or no footage |
+
+A partial clip lists up to three missing ranges; with more it shows the total (`missing 2.1 s in 59 places`), and Saved clips lists the ranges in its detail view. `tests/test_clip_reasons.py` scans the recorder, recovery and contract sources and fails when a new code has no wording.
+
 ## Test
 
 ```sh
