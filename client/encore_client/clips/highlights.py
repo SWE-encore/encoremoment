@@ -29,18 +29,21 @@ from pathlib import Path
 from typing import Iterable
 
 from ..session.session import event_rows
-from .model import STATUS_LABEL, Clip, ClipStatus, effective_label, playable_path
+from .model import Clip, effective_label, playable_path, reason_text
 
 NO_CLIP = "no exported clip linked"
 
-PLAN_TEXT = {
-    ("pending", None): "clip expected after the reaction ends",
-    ("ready", None): "clip expected, not exported yet",
-    ("partial", "before_camera_activation"): "partial clip expected (camera turned on late), not exported yet",
-    ("unavailable", "camera_off"): "no footage: camera was off",
-    ("unavailable", "camera_stopped"): "no footage: camera was stopped during the clip",
-    ("unavailable", "unknown_camera_generation"): "no footage: camera state unknown",
-}
+def plan_text(status: str, reason: str | None) -> str:
+    """What the clip plan expects before a file exists, with the shared reason wording."""
+    if status == "pending":
+        return "clip expected after the reaction ends"
+    if status == "ready":
+        return "clip expected, not exported yet"
+    if status == "partial":
+        return f"partial clip expected ({reason_text(reason)}), not exported yet"
+    if status == "unavailable":
+        return f"no footage: {reason_text(reason)}"
+    return f"clip expected: {status}"
 
 
 @dataclass(frozen=True)
@@ -111,10 +114,7 @@ def _saved_links(event_id: str, clips: list[Clip], base_dir: Path) -> tuple[Clip
     links = []
     for clip in clips:
         name = "Clip" if len(clips) == 1 else f"Part {clip.part + 1}"
-        if clip.status is ClipStatus.UNAVAILABLE:
-            status = f"{STATUS_LABEL[clip.status]} (export failed or no footage)"
-        else:
-            status = effective_label(clip, base_dir)
+        status = effective_label(clip, base_dir)
         links.append(ClipLink(name, status, playable_path(clip, base_dir), clip.clip_id,
                               tuple(e for e in clip.event_ids if e != event_id)))
     return tuple(links)
@@ -129,7 +129,6 @@ def _planned_links(plans: list[dict]) -> tuple[ClipLink, ...]:
             name = f"Part {plan['index'] + 1} (continues part {plan['linked_to'] + 1})"
         else:
             name = f"Part {plan['index'] + 1}"
-        text = PLAN_TEXT.get((plan["expected_status"], plan["reason"]),
-                             f"clip expected: {plan['expected_status']}")
+        text = plan_text(plan["expected_status"], plan["reason"])
         links.append(ClipLink(name, text if len(plans) == 1 else f"{name}: {text}"))
     return tuple(links)

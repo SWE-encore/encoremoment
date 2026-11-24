@@ -483,7 +483,12 @@ def test_window_run_starts_a_new_session_after_end(app, server, tmp_path, monkey
                 session = workspace.session
                 ui_wait(app, lambda: mic.done and session.audio_sent == 2 and not session.media_pending)
                 ui_wait(app, lambda: server_app.sessions[session.session_id].view.audio_chunks == 2)
-                assert mic.session is session and workspace.recorder.session is session
+                assert mic.session is session
+                # The app makes the clip recorder only on Linux; elsewhere there is none.
+                if sys.platform.startswith("linux"):
+                    assert workspace.recorder.session is session
+                else:
+                    assert workspace.recorder is None
                 if shots and n == 1:
                     win.grab().save(os.path.join(shots, "2-second-session.png"))
                 workspace.session_panel.end_btn.click()

@@ -37,6 +37,19 @@ python3 -m venv --system-site-packages .venv   # system site packages provide Py
 
 `gstreamer1.0-libav` is optional but widens codec support. Without it, H.264 uses `openh264dec`/`vah264dec` and AAC uses `faad` from the other plugin sets.
 
+## Platforms
+
+`encore_client/platform_support.py` makes every OS decision; no other module reads `sys.platform` (`tests/test_platform_support.py` checks this).
+
+| Feature | Linux (Ubuntu 24.04) | macOS |
+|---|---|---|
+| Live microphone (`--mic`) | Qt at 16 kHz | Native format, resampled with soxr (Qt's 16 kHz path lost ~27% of the audio, #40) |
+| Audience-camera recorder and clips | GStreamer `v4l2src` | Not available; the camera panel says so |
+| Content player (GStreamer) | Yes | Not set up; use `--no-player` |
+| Session, highlights, saved clips, test bench | Yes | Yes |
+
+macOS setup that has been used: Python 3.12 (`PySide6==6.8.3` has no wheel for 3.13+), `brew install ffmpeg`, then `python3.12 -m venv .venv` and the install below. On a MacBook Air (2026-11-24) the client tests gave 247 passed, 1 failed (the restart window test, fixed with this table), 12 skipped: ten need PyGObject/GStreamer, one ffmpeg, one the GStreamer WebRTC echo plugins.
+
 ## Run
 
 ```sh
@@ -136,6 +149,24 @@ reads and accounts for resampler delay in capture timestamps.
 Stop closes the capture device immediately while waiting for final events.
 A lost server connection also stops capture, preserves the last recording for
 saving, and leaves the disconnect reason visible. Press Start to begin a new run.
+
+## Why a clip has no footage
+
+Highlights, Saved clips and the clip plan show one wording per `reason` code (`REASON_TEXT` in `clips/model.py`):
+
+| Code | Written by | Shown as |
+|---|---|---|
+| `camera_off` | recorder, clip plan | camera was off |
+| `camera_stopped` | recorder, clip plan | camera was stopped during the clip |
+| `unknown_camera_generation` | clip plan | camera state unknown |
+| `before_camera_activation` | clip plan (partial) | camera turned on late |
+| `no_footage` | recorder | no footage was recorded |
+| `too_many_pending_clips` | recorder | not recorded: too many clips were waiting |
+| `interrupted_capture` | crash recovery (`clips/storage.py`) | recording stopped when the app closed |
+| any other text | recorder export errors | `export failed: …`, one line of at most 80 characters |
+| none | older index rows | export failed or no footage |
+
+A partial clip lists up to three missing ranges; with more it shows the total (`missing 2.1 s in 59 places`), and Saved clips lists the ranges in its detail view. `tests/test_clip_reasons.py` scans the recorder, recovery and contract sources and fails when a new code has no wording.
 
 ## Test
 
