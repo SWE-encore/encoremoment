@@ -190,3 +190,30 @@ def test_native_format_is_used_when_16khz_is_unsupported():
         QtAudioInput(LiveMicrophone(FakeSession()), NativeOnly())
         assert source.call_args.args[1] == fmt
         source.return_value.setBufferSize.assert_called_once_with(192_000)
+
+
+class _Offers16kAndNative:
+    """A microphone that accepts 16 kHz mono and prefers 48 kHz float."""
+    def __init__(self, native): self.native = native
+    def isNull(self): return False
+    def isFormatSupported(self, candidate): return True
+    def preferredFormat(self): return self.native
+    def description(self): return "16 kHz-capable test microphone"
+
+
+@pytest.mark.parametrize("platform, native_expected", [("darwin", True), ("linux", False)])
+def test_macos_captures_the_native_format_even_when_16khz_is_offered(monkeypatch, platform, native_expected):
+    # macOS: Qt's own 16 kHz conversion delivered 500 ms of audio per ~683 ms (PR #40).
+    from unittest.mock import patch
+    from PySide6.QtWidgets import QApplication
+    from encore_client.sensing import live_mic
+    QApplication.instance() or QApplication([])
+    native = audio_format(48_000, 1, "Float")
+    monkeypatch.setattr(live_mic.sys, "platform", platform)
+    with patch("PySide6.QtMultimedia.QAudioSource") as source:
+        live_mic.QtAudioInput(LiveMicrophone(FakeSession()), _Offers16kAndNative(native))
+    requested = source.call_args.args[1]
+    if native_expected:
+        assert requested == native
+    else:
+        assert (requested.sampleRate(), requested.channelCount()) == (16_000, 1)

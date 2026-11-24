@@ -1,4 +1,13 @@
-"""One workspace for actual session state, events and saved clip review."""
+"""One workspace for actual session state, events and saved clip review.
+
+Repeat Start/End (R11). With a ``session_factory``, Start after End creates a
+fresh session (new ID, generations, cursor and controls) and hands it to every
+part that held the old one: the session panel, Highlights, the camera control
+and panel, the desktop recorder, the microphone switch and the audio sources
+(``use_session``). Between sessions the microphone and camera are off, and the
+previous session's unsaved capture is removed with its recorder; saved clips
+and the clip index stay.
+"""
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QLabel, QPushButton, QTabWidget, QVBoxLayout, QWidget
 from ..clips.deletion import DeletionManager
@@ -6,7 +15,7 @@ from ..clips.model import playable_path
 from ..clips.panel import ClipPanel
 from ..sensing.camera import CameraControl
 from ..session.panel import SessionPanel
-from ..session.session import STARTED
+from ..session.session import STARTED, Conn
 from .camera_panel import CameraPanel
 from .highlights import HighlightsPanel
 
@@ -15,22 +24,28 @@ ACTIVE = STARTED  # Start pressed, End not: a drop does not stop the devices
 
 class Workspace(QWidget):
     def __init__(self, session, driver, index_path, *, require_anchor=False, demo=False,
-                 camera_device=None, recorder_factory=None):
+                 camera_device=None, recorder_factory=None, session_factory=None):
+        """``session_factory``: returns a new, not yet started ``Session``. With it,
+        Start after End begins a new session in the same run (R11); without it
+        (a scenario run), a session ends the run."""
         super().__init__()
         self.setMinimumWidth(540)
         self.session = session
+        self.index_path = index_path
+        self.session_factory = session_factory
+        self.session_users = []  # other holders of the session: each has use_session(session)
         self.microphone = None
         self.deletions = DeletionManager(index_path)
         self.recorder = None
         self.live_microphone = None
+        self._camera_device = camera_device
+        self._recorder_factory = recorder_factory
         if recorder_factory is not None:
-            self.recorder = recorder_factory(index_path, session, may_commit=self.deletions.may_commit_export)
+            self.recorder = self._new_recorder(session)
             camera_device = self.recorder
-            session.camera_frame = self.recorder.latest_face
         layout = QVBoxLayout(self)
         # Camera (R5, R6): real state from the media layer's device, or "unavailable".
-        self.camera = (CameraControl(camera_device, session, lambda: session.state in ACTIVE)
-                       if camera_device is not None else None)
+        self.camera = self._new_camera(camera_device, session)
         self.camera_panel = CameraPanel(self.camera)
         layout.addWidget(self.camera_panel)
         self.sensing = QLabel("Microphone: Off — capture unavailable")
@@ -46,9 +61,13 @@ class Workspace(QWidget):
             label = QLabel("Demo: prerecorded contract messages; no camera, microphone or AI inference.")
             label.setWordWrap(True)
             layout.addWidget(label)
-        self.session_panel = SessionPanel(session, driver, require_anchor=require_anchor)
-        # End stops the camera and the microphone first, so their off controls go out
-        # and the server closes open reactions before the stream closes (R11).
+        self.session_panel = SessionPanel(session, driver, require_anchor=require_anchor,
+                                          restartable=session_factory is not None)
+        # Start after End makes a new session first; End stops the camera and the
+        # microphone first, so their off controls go out and the server closes open
+        # reactions before the stream closes (R11).
+        self.session_panel.start_btn.clicked.disconnect()
+        self.session_panel.start_btn.clicked.connect(self.start_session)
         self.session_panel.end_btn.clicked.disconnect()
         self.session_panel.end_btn.clicked.connect(self.end_session)
         layout.addWidget(self.session_panel, 2)
@@ -72,12 +91,72 @@ class Workspace(QWidget):
         self.timer.timeout.connect(self.refresh)
         self.timer.start(100)
 
+    def _new_recorder(self, session):
+        recorder = self._recorder_factory(self.index_path, session, may_commit=self.deletions.may_commit_export)
+        session.camera_frame = recorder.latest_face
+        return recorder
+
+    def _new_camera(self, device, session):
+        """A camera control for one session: off, generation 0 (R5, R11)."""
+        if device is None:
+            return None
+        return CameraControl(device, session, lambda: session.state in ACTIVE)
+
     def add_microphone(self, switch):
         """Show the microphone on/off control under the sensing line (R8)."""
         from .microphone import MicrophoneControl
         self.microphone = MicrophoneControl(switch)
         layout = self.layout()
         layout.insertWidget(layout.indexOf(self.sensing) + 1, self.microphone)
+
+    def feed_audio(self, pcm, capture_ms):
+        """Microphone PCM for the current session's camera recording (``on_pcm``)."""
+        if self.recorder is not None:
+            self.recorder.feed_audio(pcm, capture_ms)
+
+    def start_session(self):
+        """Start; after End, first replace the ended session with a new one (R11)."""
+        if self.session.state is Conn.ENDED and self.session_factory is not None:
+            if self.session_panel.require_anchor and self.session.last_anchor is None:
+                return  # no video open: the new session could not start either
+            self.use_session(self.session_factory())
+        self.session_panel.start()  # the devices follow on the next refresh, as for the first session
+
+    def use_session(self, session):
+        """Hand a new, not yet started session to everything that held the old one.
+
+        Nothing of the old session carries over: its devices are closed, its
+        recorder (and the unsaved capture in it) is shut down, its stream is
+        closed and its log file is closed. The camera control is new, so camera
+        generations start again at 0 like the session's own.
+        """
+        old = self.session
+        if old.state not in (Conn.IDLE, Conn.ENDED):
+            raise RuntimeError(f"use_session() while the session is {old.state.value}; end it first")
+        if session.state is not Conn.IDLE:
+            raise RuntimeError("use_session() needs a session that has not started")
+        if self.camera is not None:
+            self.camera.stop_for_session_end()  # already off after End; closes it otherwise
+        if self.microphone is not None:
+            self.microphone.switch.use_session(session)  # closes the device first
+        if self.live_microphone is not None:
+            self.live_microphone.use_session(session)
+        for user in self.session_users:
+            user.use_session(session)
+        camera_device = self._camera_device
+        if self.recorder is not None:
+            old.camera_frame = None
+            self.recorder.shutdown()  # removes the old session's unsaved capture
+            self.recorder = self._new_recorder(session)
+            camera_device = self.recorder
+        old.end()
+        old.log.close()
+        self.session = session
+        self.camera = self._new_camera(camera_device, session)
+        self.camera_panel.camera = self.camera
+        self.session_panel.use_session(session)
+        self.highlights.use_session(session)
+        self.refresh()
 
     def end_session(self):
         if self.camera is not None:

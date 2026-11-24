@@ -6,6 +6,7 @@ probe. The local recording tap receives only unprocessed audience PCM.
 
 from __future__ import annotations
 
+import sys
 from collections import deque
 from typing import Callable
 
@@ -42,6 +43,20 @@ class LiveMicrophone:
         self._buf = bytearray()
         self._run: list[int] | None = None  # [generation, first sample ms, bytes taken from the run]
         self._skip = 0  # bytes still to discard after the device started
+
+    def use_session(self, session) -> None:
+        """Feed a new session after End (R11). Nothing captured for the previous
+        session carries over: buffered PCM, the recording, the connection and
+        the echo cancellation status start again."""
+        self.session = session
+        self._reset_run()
+        self._connection = None
+        self._skip = 0
+        self.aec_status = "reference_unavailable" if self.player else "off"
+        self.sent = 0
+        self.recording = bytearray()
+        self.last_pcm = b""
+        self.zero_ms = 0
 
     def device_started(self, settle_ms: int = SETTLE_MS) -> None:
         """The device just opened: discard its first ``settle_ms`` of audio."""
@@ -214,7 +229,9 @@ class QtAudioInput:
         fmt.setSampleRate(rate)
         fmt.setChannelCount(1)
         fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
-        if not device.isFormatSupported(fmt):
+        # macOS: Qt's own conversion to 16 kHz delivers about 27% too few samples
+        # (500 ms of audio per ~683 ms). Capture the native format and resample here.
+        if sys.platform == "darwin" or not device.isFormatSupported(fmt):
             fmt = device.preferredFormat()
         if not device.isFormatSupported(fmt):
             raise RuntimeError(f"{device.description()} has no supported capture format")
