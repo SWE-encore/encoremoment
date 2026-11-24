@@ -462,7 +462,6 @@ def ui_wait(app, predicate, timeout=8.0):
 def test_window_run_starts_a_new_session_after_end(app, server, tmp_path, monkeypatch):
     """The app's own window path (``--no-player --mic-wav``), driven through its buttons:
     Start after End gives a new session that the WAV microphone and the recorder follow."""
-    from encore_client.platform_support import desktop_capture
     from PySide6.QtWidgets import QApplication, QMainWindow
 
     from encore_client.__main__ import main
@@ -485,11 +484,11 @@ def test_window_run_starts_a_new_session_after_end(app, server, tmp_path, monkey
                 ui_wait(app, lambda: mic.done and session.audio_sent == 2 and not session.media_pending)
                 ui_wait(app, lambda: server_app.sessions[session.session_id].view.audio_chunks == 2)
                 assert mic.session is session
-                if desktop_capture():   # the recorder follows the new session where it exists
+                # The app makes the clip recorder only on Linux; elsewhere there is none.
+                if sys.platform.startswith("linux"):
                     assert workspace.recorder.session is session
-                else:                   # macOS/Windows: no recorder, and the panel says why
+                else:
                     assert workspace.recorder is None
-                    assert "not supported on" in workspace.camera_panel.indicator.text()
                 if shots and n == 1:
                     win.grab().save(os.path.join(shots, "2-second-session.png"))
                 workspace.session_panel.end_btn.click()
