@@ -6,6 +6,7 @@ probe. The local recording tap receives only unprocessed audience PCM.
 
 from __future__ import annotations
 
+import sys
 from collections import deque
 from typing import Callable
 
@@ -228,7 +229,9 @@ class QtAudioInput:
         fmt.setSampleRate(rate)
         fmt.setChannelCount(1)
         fmt.setSampleFormat(QAudioFormat.SampleFormat.Int16)
-        if not device.isFormatSupported(fmt):
+        # macOS: Qt's own conversion to 16 kHz delivers about 27% too few samples
+        # (500 ms of audio per ~683 ms). Capture the native format and resample here.
+        if sys.platform == "darwin" or not device.isFormatSupported(fmt):
             fmt = device.preferredFormat()
         if not device.isFormatSupported(fmt):
             raise RuntimeError(f"{device.description()} has no supported capture format")
