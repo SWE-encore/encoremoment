@@ -196,6 +196,19 @@ class LinearEchoPlaybackTest(unittest.TestCase):
     """EM-10: Ubuntu 24.04 has no WebRTC plugins, so the player taps its own audio and the
     linear canceller removes the echo. Same synthetic scene as the WebRTC test above."""
 
+    @staticmethod
+    def _reference_lag_ms(player, far, start_ms):
+        """How far the tapped reference at ``start_ms`` (running time) sits from ``far``."""
+        import numpy as np
+
+        window = player._reference.window((start_ms - 100) * Gst.MSECOND, 4800)
+        if window is None:
+            return None
+        lo = (start_ms - 200) * 48
+        segment = far[lo:lo + 4800 + 9600].astype(float)
+        score = np.correlate(segment, window.astype(float), "valid")
+        return (int(np.argmax(score)) - 4800) / 48
+
     def test_linear_fallback_cancels_echo_keeps_the_near_tone_and_resets_on_seek(self):
         import numpy as np
 
@@ -223,7 +236,7 @@ class LinearEchoPlaybackTest(unittest.TestCase):
             # back from one simulated room recording (30 ms acoustic delay) and stamped with
             # when they were captured, as live_mic does. Cutting each block at whatever the
             # position happens to be would make the echo path jump by a few ms per block.
-            origin, j = None, 0
+            origin, j, lag_ms = None, 0, None
             echo_in, echo_out, mixed_out, near_input, near_only_gain = [], [], [], [], []
             states = set()
             deadline = time.monotonic() + 9
@@ -241,6 +254,8 @@ class LinearEchoPlaybackTest(unittest.TestCase):
                     output, state = player.cancel_echo(mic.tobytes(), player.clock() - (pos - start))
                     states.add(state)
                     self.assertEqual(len(output), len(mic.tobytes()))
+                    if lag_ms is None and start >= 2000:
+                        lag_ms = self._reference_lag_ms(player, far, start)
                     if state == "active":
                         output = np.frombuffer(output, dtype="<i2").astype(float)
                         if 2500 <= start < 3950:
@@ -261,7 +276,10 @@ class LinearEchoPlaybackTest(unittest.TestCase):
             near_gain = np.sqrt(np.mean(np.square(mixed_out))/np.mean(np.square(near_input)))
             tone_gain = float(np.median(near_only_gain))
             print(f"Linear fallback: echo attenuation {erle:.1f} dB, mixture/near-end RMS {near_gain:.2f}, "
-                  f"near-only tone gain {tone_gain:.2f}")
+                  f"near-only tone gain {tone_gain:.2f}, reference vs position {lag_ms} ms")
+            # The tap must hold, at each running time, what the position says is playing.
+            self.assertIsNotNone(lag_ms)
+            self.assertLess(abs(lag_ms), 20)
             self.assertGreater(erle, 6)
             self.assertGreater(near_gain, .15)
             self.assertGreater(tone_gain, .5)        # no suppressor: the near tone is not turned down

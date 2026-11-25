@@ -65,6 +65,13 @@ def test_rounding_overlap_does_not_duplicate_samples():
     np.testing.assert_array_equal(ref.window(0, 2 * TEN_MS), ramp(0, 2 * TEN_MS))
 
 
+def test_stereo_is_mixed_down_to_mono():
+    ref = ReferenceBuffer()
+    left, right = np.full(TEN_MS, 1000, np.int16), np.full(TEN_MS, 3000, np.int16)
+    assert ref.push(pcm(np.stack([left, right], axis=1).ravel()), 0, channels=2) == TEN_MS
+    assert (ref.window(0, TEN_MS) == 2000).all()
+
+
 def test_push_and_window_from_two_threads():
     ref = ReferenceBuffer()
     errors = []

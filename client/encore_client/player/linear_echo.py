@@ -1,8 +1,8 @@
 """EM-10 (R1): echo cancellation for the player when the GStreamer WebRTC plugins are missing.
 
 Ubuntu 24.04 and Homebrew GStreamer ship neither ``webrtcdsp`` nor ``webrtcechoprobe``.
-Without them the player taps its own decoded audio (a ``tee`` before the audio sink,
-see pipeline.py), keeps it here by pipeline running time, and cancels the echo with the
+Without them the player taps its own decoded audio (a buffer probe just before the
+audio sink, see pipeline.py), keeps it here by pipeline running time, and cancels the echo with the
 linear canceller (sensing/linear_aec.py). docs/em-10-aec-evaluation.md explains why a
 linear canceller and not WebRTC AEC3: AEC3's suppressor removed the laughter too.
 
@@ -21,7 +21,7 @@ from ..sensing.linear_aec import LinearEchoCanceller
 RATE = 48_000                 # the player's audio branch and the microphone blocks
 NS_PER_SAMPLE = 1_000_000_000 / RATE
 WARMUP_MS = 500               # same rule as the WebRTC filter (player/echo.py)
-KEEP_MS = 3_000               # the tap runs up to ~1 s ahead; the mic may lag by up to 500 ms
+KEEP_MS = 2_000               # reference history; the mic may lag playback by up to 500 ms
 BLOCK = 768                   # 16 ms at 48 kHz: the canceller's fixed output delay
 TAPS = 12_288                 # 256 ms echo tail at 48 kHz
 DRIFT_MS = 20                 # re-anchor when a block's timestamp is this far from the cursor
@@ -58,8 +58,15 @@ class ReferenceBuffer:
                 return None
             return round((self._start + len(self._samples)) * 1_000_000_000 / self.rate)
 
-    def push(self, pcm: bytes, start_ns: int) -> None:
+    def push(self, pcm: bytes, start_ns: int, channels: int = 1) -> int:
+        """Add interleaved S16 audio played from ``start_ns``, mixed down to mono.
+
+        Returns the number of mono samples in ``pcm``."""
         data = np.frombuffer(pcm, "<i2")
+        if channels > 1:
+            frames = len(data) // channels
+            data = data[:frames * channels].reshape(frames, channels).mean(axis=1).astype(np.int16)
+        count = len(data)
         first = self.index(start_ns)
         with self._lock:
             if self._start is not None:
@@ -77,6 +84,7 @@ class ReferenceBuffer:
             if extra > 0:
                 self._samples = self._samples[extra:]
                 self._start += extra
+        return count
 
     def window(self, start_ns: int, count: int) -> np.ndarray | None:
         """The ``count`` samples played from ``start_ns``, or None if any are missing."""
