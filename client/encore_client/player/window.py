@@ -211,8 +211,10 @@ class PlayerWindow(QMainWindow):
     def _update_echo_label(self) -> None:
         if self.player.echo_reference == "available":
             self.echo_label.setText("Echo reference: ready")
+        elif self.player.echo_reference == "linear":
+            self.echo_label.setText("Echo reference: ready (linear canceller; webrtcdsp not installed)")
         else:
-            self.echo_label.setText("Echo reference: unavailable (webrtcdsp plugin not installed)")
+            self.echo_label.setText("Echo reference: unavailable")
 
 
 def jsonl_writer(path: str | Path) -> Callable[[dict[str, Any]], None]:

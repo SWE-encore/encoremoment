@@ -74,7 +74,15 @@ No processor made the echo alone trigger laughter (0 false windows everywhere).
 - The room is a linear synthetic response; real speakers add non-linear distortion a linear filter cannot remove. Next: a real room recording (EM-10 acceptance case 2).
 - Playback was speech only; music and effects are untested with YAMNet.
 - With no echo the canceller still loses some windows (56 vs the 61 of a pure shift): the background is sometimes copied during a laugh. A stricter copy rule is the next tuning step.
-- The canceller is not wired into the app; the live microphone still uses the GStreamer path. Wiring it in, and letting the user switch it (R12, EM-21), come next.
+- Wired in as the player's fallback when `webrtcdsp`/`webrtcechoprobe` are missing (section 8). Letting the user switch it (R12, EM-21) comes next.
+
+## 8. In the app: the player's fallback
+
+`player/pipeline.py` keeps the WebRTC filter when both plugins exist. Otherwise (`echo_reference == "linear"`, as on Ubuntu 24.04 and macOS) the audio branch becomes `volume ! tee`, one copy to the sink and one, as mono S16 at 48 kHz, to an `appsink` at the same running time. `player/linear_echo.py` keeps those samples by running time (`ReferenceBuffer`, 2 s) and `cancel_echo` gives each 10 ms microphone block the reference for the same time span to the linear canceller (768-sample blocks, 256 ms tail). Status follows the WebRTC filter: `warming_up` for 500 ms, then `active`; `reference_unavailable` when the reference does not cover the block, after a seek, while paused, or at speeds other than 1x.
+
+Known cost: the cleaned microphone audio is 16 ms behind the raw audio (one block).
+
+Tests: `client/tests/test_linear_echo.py` (reference timing, gaps, seeks, threads, warm-up, 48 kHz cancellation, pass-through; NumPy only) and `test_echo_capture.py::LinearEchoPlaybackTest`, the WebRTC test's scene run through the real player where the plugins are missing (CI on Ubuntu).
 
 ## Reproduce (macOS)
 

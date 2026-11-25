@@ -5,13 +5,16 @@ One top-level Gst.Pipeline decodes a local file:
     uridecodebin3 ─┬─ video: queue ! videoconvert ! videoscale ! RGBx ! appsink
                    └─ audio: queue ! audioconvert ! audioresample ! S16LE 48 kHz
                              ! volume ! webrtcechoprobe (if installed) ! audio sink
+                             ! volume ! tee ─┬─ audio sink                (otherwise)
+                                             └─ S16LE mono ! appsink echo_ref
 
 The audio branch runs at 48 kHz through webrtcechoprobe so the echo
 canceller (R1) can process microphone blocks inside this same
-pipeline, which the probe requires (Submission B, Requirement 1). Without
-the probe the player still plays and reports the reference as unavailable.
-The probe sits after the volume control so the reference matches what the
-speakers actually play.
+pipeline, which the probe requires (Submission B, Requirement 1).
+Ubuntu 24.04 and Homebrew ship no probe, so then the branch copies the
+played audio to an appsink and the linear canceller (linear_echo.py, EM-10)
+cancels against it by running time. Either tap sits after the volume control
+so the reference matches what the speakers actually play.
 
 There is no Qt and no GLib main loop here: the UI calls poll() from a timer,
 which handles bus messages, emits playback anchors and returns the newest
@@ -32,7 +35,8 @@ from gi.repository import Gst  # noqa: E402
 
 from ..clock import monotonic_ms  # noqa: E402
 from .anchors import AnchorTracker, content_identity  # noqa: E402
-from .echo import EchoFilter  # noqa: E402
+from .echo import EchoFilter
+from .linear_echo import LinearEchoPath, ReferenceBuffer  # noqa: E402
 
 Gst.init(None)
 
@@ -76,7 +80,10 @@ class PlayerPipeline:
         self._reference_end_ns = None
         self._echo_failed = False
         self.heartbeat_ms = heartbeat_ms
-        self.echo_reference = "available" if echo_probe_available() else "unavailable"
+        # "available": WebRTC probe + filter. "linear": the plugins are missing (Ubuntu 24.04,
+        # Homebrew), so the player taps its own audio and uses the linear canceller (EM-10).
+        self.echo_reference = "available" if echo_probe_available() else "linear"
+        self._reference = ReferenceBuffer()
         self.pipeline: Gst.Pipeline | None = None
         self.path: Path | None = None
         self.rate = 1.0
@@ -116,6 +123,7 @@ class PlayerPipeline:
 
     def close(self) -> None:
         self.reset_echo()
+        self._reference.reset()
         if self.pipeline is not None:
             self.pipeline.set_state(Gst.State.NULL)
         self.pipeline = None
@@ -282,16 +290,28 @@ class PlayerPipeline:
                 "appsink name=video_out sync=true max-buffers=1 drop=true emit-signals=false enable-last-sample=true"
             )
         elif kind == "audio" and not self.has_audio:
-            probe = f"webrtcechoprobe name={self.probe_name} ! " if self.echo_reference == "available" else ""
-            desc = (
-                f"queue ! audioconvert ! audioresample ! {AUDIO_CAPS} ! "
-                f"volume name=volume ! {probe}{self.audio_sink_desc}"
-            )
+            if self.echo_reference == "available":
+                desc = (
+                    f"queue ! audioconvert ! audioresample ! {AUDIO_CAPS} ! "
+                    f"volume name=volume ! webrtcechoprobe name={self.probe_name} ! {self.audio_sink_desc}"
+                )
+            else:
+                # Copy what is played, after the volume, into an appsink at the same running
+                # time. The leaky queue keeps a slow reader from ever stalling playback.
+                desc = (
+                    f"queue ! audioconvert ! audioresample ! {AUDIO_CAPS} ! volume name=volume ! "
+                    f"tee name=echo_tee ! queue ! {self.audio_sink_desc} "
+                    "echo_tee. ! queue leaky=downstream max-size-time=200000000 max-size-buffers=0 "
+                    "max-size-bytes=0 ! audioconvert ! audio/x-raw,format=S16LE,rate=48000,channels=1 ! "
+                    "appsink name=echo_ref sync=true emit-signals=true max-buffers=50 drop=true"
+                )
         else:
             desc = "fakesink async=false sync=false"
         branch = Gst.parse_bin_from_description(desc, True)
         if kind == "audio" and (probe_element := branch.get_by_name(self.probe_name)) is not None:
             probe_element.get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, self._reference_buffer)
+        if kind == "audio" and (tap := branch.get_by_name("echo_ref")) is not None:
+            tap.connect("new-sample", self._reference_sample)
         self.pipeline.add(branch)
         branch.sync_state_with_parent()
         if pad.link(branch.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
@@ -313,6 +333,24 @@ class PlayerPipeline:
                 self._reference_end_ns = end_ns
         return Gst.PadProbeReturn.OK
 
+    def _reference_sample(self, sink):
+        """Linear mode: keep the played samples by running time (GStreamer streaming thread)."""
+        sample = sink.emit("pull-sample")
+        if sample is None:
+            return Gst.FlowReturn.OK
+        buffer, segment = sample.get_buffer(), sample.get_segment()
+        if buffer is None or buffer.pts == Gst.CLOCK_TIME_NONE or abs(segment.rate - 1.0) > 1e-6:
+            # At other speeds running time and sample count disagree; no reference then.
+            self._reference.reset()
+            return Gst.FlowReturn.OK
+        start_ns = segment.to_running_time(Gst.Format.TIME, buffer.pts)
+        if start_ns == Gst.CLOCK_TIME_NONE:
+            return Gst.FlowReturn.OK
+        data = buffer.extract_dup(0, buffer.get_size())
+        self._reference.push(data, start_ns)
+        self._reference_end_ns = start_ns + len(data) // 2 * Gst.SECOND // 48_000
+        return Gst.FlowReturn.OK
+
     def reset_echo(self):
         if self._echo is not None:
             self._echo.close()
@@ -333,6 +371,14 @@ class PlayerPipeline:
         if pts < 0 or not -250 * Gst.MSECOND <= self._reference_end_ns - pts <= 500 * Gst.MSECOND:
             self.reset_echo()
             return pcm, "reference_unavailable"
+        if self.echo_reference == "linear":
+            reference = self._reference.window(pts, len(pcm) // 2)
+            if reference is None:
+                self._echo = None       # the next block starts a fresh canceller
+                return pcm, "reference_unavailable"
+            if self._echo is None:
+                self._echo = LinearEchoPath()
+            return self._echo.process(pcm, reference)
         if self._echo_failed:
             return pcm, "reference_unavailable"
         try:
