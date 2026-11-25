@@ -219,33 +219,40 @@ class LinearEchoPlaybackTest(unittest.TestCase):
                 time.sleep(.003)
             self.assertEqual(player.cancel_echo(bytes(960), player.clock())[1], "reference_unavailable")
             player.play()
-            last = -1
+            # A microphone delivers one continuous stream, so the blocks here are cut back to
+            # back from one simulated room recording (30 ms acoustic delay) and stamped with
+            # when they were captured, as live_mic does. Cutting each block at whatever the
+            # position happens to be would make the echo path jump by a few ms per block.
+            origin, j = None, 0
             echo_in, echo_out, mixed_out, near_input, near_only_gain = [], [], [], [], []
             states = set()
             deadline = time.monotonic() + 9
             while (pos := player.position_ms() or 0) < 6300:
                 self.assertLess(time.monotonic(), deadline, player.error)
                 player.poll()
-                if pos >= 40 and pos // 10 > last:
-                    first = (pos - 40)*48
-                    echo = far[first:first+480] * .65
-                    near = 1700 * np.sin(2*np.pi*880*(np.arange(480) + last*480)/rate)
-                    mic = (echo + (near if pos >= 4000 else 0)).astype("<i2")
-                    output, state = player.cancel_echo(mic.tobytes(), player.clock()-10)
+                if origin is None and pos >= 40:
+                    origin = pos
+                while origin is not None and pos >= origin + 10 * (j + 1):
+                    start = origin + 10 * j                 # playback ms when this block began
+                    first = (start - 30) * 48
+                    echo = far[first:first + 480] * .65
+                    near = 1700 * np.sin(2*np.pi*880*(np.arange(480) + j*480)/rate)
+                    mic = (echo + (near if start >= 4000 else 0)).astype("<i2")
+                    output, state = player.cancel_echo(mic.tobytes(), player.clock() - (pos - start))
                     states.add(state)
                     self.assertEqual(len(output), len(mic.tobytes()))
                     if state == "active":
                         output = np.frombuffer(output, dtype="<i2").astype(float)
-                        if 2500 <= pos < 3950:
+                        if 2500 <= start < 3950:
                             echo_in.extend(mic.astype(float))
                             echo_out.extend(output)
-                        elif 4600 <= pos < 4950:
+                        elif 4600 <= start < 4950:
                             mixed_out.extend(output)
                             near_input.extend(near)
-                        elif pos >= 5600:
+                        elif start >= 5600:
                             basis = np.exp(2j*np.pi*880*np.arange(480)/rate)
                             near_only_gain.append(abs(output @ basis) / abs(near @ basis))
-                    last = pos // 10
+                    j += 1
                 time.sleep(.002)
             self.assertTrue({"active", "warming_up"} <= states, states)
             self.assertGreater(len(echo_out), rate // 2)

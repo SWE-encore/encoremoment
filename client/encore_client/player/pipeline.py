@@ -35,7 +35,7 @@ from gi.repository import Gst  # noqa: E402
 
 from ..clock import monotonic_ms  # noqa: E402
 from .anchors import AnchorTracker, content_identity  # noqa: E402
-from .echo import EchoFilter
+from .echo import EchoFilter  # noqa: E402
 from .linear_echo import LinearEchoPath, ReferenceBuffer  # noqa: E402
 
 Gst.init(None)
@@ -372,13 +372,9 @@ class PlayerPipeline:
             self.reset_echo()
             return pcm, "reference_unavailable"
         if self.echo_reference == "linear":
-            reference = self._reference.window(pts, len(pcm) // 2)
-            if reference is None:
-                self._echo = None       # the next block starts a fresh canceller
-                return pcm, "reference_unavailable"
             if self._echo is None:
-                self._echo = LinearEchoPath()
-            return self._echo.process(pcm, reference)
+                self._echo = LinearEchoPath(self._reference)
+            return self._echo.process(pcm, pts)
         if self._echo_failed:
             return pcm, "reference_unavailable"
         try:
