@@ -68,7 +68,7 @@ def test_a_file_with_a_loud_burst_gives_scores_and_a_mapped_event(app, tmp_path)
         run_file(app, win, write_wav(tmp_path / "burst.wav", [(2, 0), (2, 0.5), (3, 0)]))
         (event,) = finals(win)
         assert event["reaction"]["type"] == "laughter"
-        assert event["source"]["model"] == "loudness-standin" and event["source"]["config"] == "detector-v1"
+        assert event["source"]["model"] == "loudness-standin" and event["source"]["config"] == "detector-v2"
         start = event["capture"]["start_ms"] - win._origin
         assert 1_000 <= start <= 2_000  # the burst is at 2-4 s in the file
         assert event["playback"]["timecode_start_ms"] == start  # content time = position in the file

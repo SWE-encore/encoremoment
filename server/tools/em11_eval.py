@@ -14,12 +14,16 @@ clips live in a cache directory, and only the numbers go into docs/em-11-evaluat
     TFHUB_CACHE_DIR=~/.cache/encore/tfhub python server/tools/em11_eval.py run \\
         --cache ~/.cache/encore/fsd50k-eval --json results.json
 
+Levels are chosen on the dev split, never on eval: ``fetch --split dev`` into another cache,
+then ``tune`` scans levels and rules on those clips (docs/em-11-evaluation.md, section 5).
+
 Each clip goes through ``ServerSession`` (server/encore_server/session.py) as a PC would send
 it: 0.5 s audio chunks, microphone generation 1, camera off. Everything after the socket is
 production code: admission, 0.975 s windows every 0.48 s, the model and the detector. Two
-server set-ups are scored, because laughter opens at a different level in each:
+server set-ups are scored, because laughter goes through different rules in each:
 
-- ``audio-only``: no face model, ``DetectorConfig`` levels (laughter .4, scream .4, gasp .3);
+- ``audio-only``: no face model, ``DetectorConfig`` levels (``detector-v2``: laughter .25, scream .4,
+  gasp .3; ``--detector detector-v1`` runs laughter .4);
 - ``face-server``: started with a face model (the demo set-up), camera off: laughter opens on
   sound alone at ``TabRules.strong_audio`` (.25). Scream and gasp are the same in both.
 
@@ -68,7 +72,8 @@ T0 = 10_000  # capture clock at the first sample
 LEAD_MS, TAIL_MS = 2_000, 3_000
 SNRS = (10, 0)
 SEED = 11
-MIRROR = "https://huggingface.co/datasets/Fhrozen/FSD50k/resolve/main/clips/eval/{}.wav"
+MIRROR = "https://huggingface.co/datasets/Fhrozen/FSD50k/resolve/main/clips/{split}/{fname}.wav"
+SPLITS = ("eval", "dev")  # dev is for tuning; eval is only ever measured
 
 LAUGH = {"Laughter", "Giggle", "Chuckle_and_chortle"}
 REACTION_LABELS = LAUGH | {"Screaming", "Gasp"}
@@ -82,6 +87,11 @@ GROUPS = {
     "music": ({"Music"}, {"Human_voice"}, None),
     "shout_yell": ({"Shout", "Yell"}, REACTION_LABELS | {"Music"}, None),
     "breath_cough": ({"Breathing", "Cough", "Sigh", "Sneeze"}, REACTION_LABELS | {"Music"}, None),
+}
+# What ``run --detector`` measures: the server's current settings, or the ones PR #50 measured.
+DETECTORS = {
+    "current": DetectorConfig(),
+    "detector-v1": DetectorConfig(name="detector-v1", trigger={"laughter": 0.4, "scream": 0.4, "gasp": 0.3}),
 }
 # Freesound ids of the ESC-50 clips EM-26 already ran (docs/em-26-trigger-check.md): kept out.
 SEEN_IDS = {"104089", "1791", "187207", "19111", "30039", "30043", "33658", "36164"}
@@ -117,8 +127,9 @@ def to_16k(src: Path, dst: Path) -> None:
     tmp.replace(dst)
 
 
-def fetch(cache: Path, per_group: int, max_clip: int, max_total: int, seed: int = SEED) -> dict:
-    labels = read_labels(cache / "labels" / "FSD50K.ground_truth" / "eval.csv")
+def fetch(cache: Path, per_group: int, max_clip: int, max_total: int, seed: int = SEED, *,
+          split: str = "eval", labels_dir: Path | None = None) -> dict:
+    labels = read_labels((labels_dir or cache / "labels" / "FSD50K.ground_truth") / f"{split}.csv")
     raw_dir = cache / "clips"
     raw_dir.mkdir(parents=True, exist_ok=True)
     total = sum(p.stat().st_size for p in raw_dir.glob("*.wav"))
@@ -131,7 +142,7 @@ def fetch(cache: Path, per_group: int, max_clip: int, max_total: int, seed: int 
                 break
             raw = raw_dir / f"{fname}.wav"
             if not raw.exists():
-                req = urllib.request.Request(MIRROR.format(fname), headers={"User-Agent": "encore-eval/1"})
+                req = urllib.request.Request(MIRROR.format(split=split, fname=fname), headers={"User-Agent": "encore-eval/1"})
                 with urllib.request.urlopen(req, timeout=60) as resp:
                     size = int(resp.headers.get("Content-Length") or 0)
                     if not size or size > max_clip:
@@ -151,7 +162,7 @@ def fetch(cache: Path, per_group: int, max_clip: int, max_total: int, seed: int 
             to_16k(raw, cache / "16k" / f"{fname}.wav")
             got.append(fname)
         print(f"{group}: {len(got)} clips", file=sys.stderr)
-    info = {"seed": seed, "per_group": per_group, "max_clip_bytes": max_clip, "bytes": total,
+    info = {"split": split, "seed": seed, "per_group": per_group, "max_clip_bytes": max_clip, "bytes": total,
             "groups": manifest, "skipped_too_large": skipped}
     (cache / "manifest.json").write_text(json.dumps(info, indent=1))
     return info
@@ -252,10 +263,11 @@ def _packet(chunk: int, pcm: bytes) -> bytes:
     return struct.pack("!I", len(header)) + header + pcm
 
 
-def run_stream(pcm: np.ndarray, model: CachedModel, *, face_server: bool) -> tuple[list, list]:
+def run_stream(pcm: np.ndarray, model: CachedModel, *, face_server: bool,
+               config: DetectorConfig | None = None) -> tuple[list, list]:
     """Feed one stream as PC chunks. Returns (OPEN events with their arrival time, frames)."""
     frames = []
-    session = ServerSession("em11", model, face_model=_UnusedFace() if face_server else None,
+    session = ServerSession("em11", model, config, face_model=_UnusedFace() if face_server else None,
                             on_frame=frames.append)
     session.on_text(json.dumps(dict(schema="encore.v1", session_id="em11", kind="control_update",
                                     sensor="microphone", generation=1, enabled=True, seq=0,
@@ -318,7 +330,8 @@ def load_clips(cache: Path) -> list[Clip]:
     return clips
 
 
-def evaluate(clips: list[Clip], model, *, snrs=SNRS, progress=None) -> list[dict]:
+def evaluate(clips: list[Clip], model, *, snrs=SNRS, config: DetectorConfig | None = None,
+             progress=None) -> list[dict]:
     cached = model if isinstance(model, CachedModel) else CachedModel(model)
     backgrounds = {g: [c for c in clips if c.group == g] for g in ("speech", "music")}
     rows = []
@@ -333,7 +346,7 @@ def evaluate(clips: list[Clip], model, *, snrs=SNRS, progress=None) -> list[dict
                     streams.append((f"{bg_group}{snr:+d}dB", bg_group, snr, mixed_stream(clip.pcm, bg.pcm, snr)))
         for condition, bg_group, snr, pcm in streams:
             for setup in ("audio-only", "face-server"):
-                opens, frames = run_stream(pcm, cached, face_server=setup == "face-server")
+                opens, frames = run_stream(pcm, cached, face_server=setup == "face-server", config=config)
                 row = judge(opens, frames, LEAD_MS, clip.length_ms, clip.onset, clip.expect)
                 row.update(fname=clip.fname, group=clip.group, expect=clip.expect, condition=condition,
                            background=bg_group, snr_db=snr, setup=setup, length_ms=clip.length_ms,
@@ -342,6 +355,127 @@ def evaluate(clips: list[Clip], model, *, snrs=SNRS, progress=None) -> list[dict
         if progress:
             progress(i + 1, len(clips))
     return rows
+
+
+# ---- tuning on the dev split ------------------------------------------------------------
+#
+# Settings are chosen here on dev clips only, then measured once on eval with ``run``.
+# A clip opens a reaction when any server window touching it passes (the detector opens on
+# the first window at the level, and nothing is open before a clean clip).
+
+LEVELS = (.1, .15, .2, .25, .3, .35, .4, .5)
+RIVAL_SETS = {
+    "none": (),
+    "Breathing": ("Breathing",),
+    "Breathing, Sigh, Sneeze": ("Breathing", "Sigh", "Sneeze"),
+    "all respiratory": ("Breathing", "Wheeze", "Snoring", "Pant", "Snort", "Cough", "Throat clearing",
+                        "Sneeze", "Sniff", "Sigh"),
+}
+RIVAL_RATIOS = (.5, 1.0, 1.5, 2.0)  # the reaction counts only while it is >= ratio x its strongest rival
+MAX_FALSE = .10  # no other group of sounds may open the reaction on more than 10 % of its clips
+
+
+class AllScores:
+    """The real YAMNet wrapper, also keeping every class score of every window it scores."""
+
+    def __init__(self, yamnet):
+        self.yamnet, self.name, self.replayed_ms = yamnet, yamnet.name, 0.0
+        self.vectors: list[np.ndarray] = []
+
+    def __call__(self, pcm: bytes) -> dict[str, float]:
+        vector = self.yamnet.class_scores(pcm)
+        self.vectors.append(vector)
+        return self.yamnet.from_class_scores(vector)
+
+
+def clip_class_scores(clip: Clip, yamnet) -> np.ndarray:
+    """Every class score of each server window that touches the clip, clip played alone."""
+    model = AllScores(yamnet)
+    _, frames = run_stream(clean_stream(clip.pcm), model, face_server=False)
+    start, end = T0 + LEAD_MS, T0 + LEAD_MS + clip.length_ms
+    return np.array([v for f, v in zip(frames, model.vectors, strict=True)
+                     if f.end_ms > start and f.start_ms < end], np.float32).reshape(-1, len(yamnet.labels))
+
+
+def clip_opens(windows: np.ndarray, labels: list[str], reaction: str, level: float,
+          rivals: tuple[str, ...] = (), ratio: float = 1.0) -> bool:
+    from encore_server.models import YAMNET_CLASSES
+
+    score = windows[:, [labels.index(n) for n in YAMNET_CLASSES[reaction]]].max(axis=1, initial=0)
+    passes = score >= level
+    if rivals:
+        passes &= score >= ratio * windows[:, [labels.index(n) for n in rivals]].max(axis=1, initial=0)
+    return bool(passes.any())
+
+
+def scan(windows: dict[str, np.ndarray], groups: dict[str, list[str]], labels: list[str],
+         reaction: str, rules: list[tuple[str, float]]) -> list[dict]:
+    """Every (rival set, ratio) x level: share of target clips found, false opens per other group."""
+    target = next(g for g, (_, _, expect) in GROUPS.items() if expect == reaction)
+    rows = []
+    for rule, (rival_name, ratio) in enumerate(rules):
+        for level in LEVELS:
+            hit = {g: sum(clip_opens(windows[f], labels, reaction, level, RIVAL_SETS[rival_name], ratio) for f in ids)
+                   for g, ids in groups.items()}
+            false = {g: hit[g] / len(ids) for g, ids in groups.items() if g != target and ids}
+            rows.append(dict(reaction=reaction, rule=rule, rivals=rival_name, ratio=ratio if rival_name != "none" else None,
+                             level=level, found=hit[target], of=len(groups[target]), opened=hit,
+                             worst_false=max(false.values()), allowed=max(false.values()) <= MAX_FALSE))
+    return rows
+
+
+def choose(rows: list[dict]) -> dict | None:
+    """Most target clips found with every other group at or under MAX_FALSE; then fewest false
+    opens; then the simplest rule (no rival first, then the most lenient ratio); then the highest
+    level, the one furthest from opening on sounds dev did not have."""
+    allowed = [r for r in rows if r["allowed"]]
+    if not allowed:
+        return None
+    false = lambda r: sum(v for g, v in r["opened"].items() if GROUPS[g][2] != r["reaction"])  # noqa: E731
+    return max(allowed, key=lambda r: (r["found"], -false(r), -r["rule"], r["level"]))
+
+
+def tune(cache: Path, yamnet) -> dict:
+    manifest = json.loads((cache / "manifest.json").read_text())
+    clips = load_clips(cache)
+    windows = {c.fname: clip_class_scores(c, yamnet) for c in clips}
+    groups = manifest["groups"]
+    laughter = scan(windows, groups, yamnet.labels, "laughter", [("none", 1.0)])
+    scream = scan(windows, groups, yamnet.labels, "scream", [("none", 1.0)])
+    gasp = scan(windows, groups, yamnet.labels, "gasp",
+                [("none", 1.0)] + [(name, r) for name in RIVAL_SETS if name != "none" for r in RIVAL_RATIOS])
+    return {"split": manifest.get("split"), "clips": {g: len(ids) for g, ids in groups.items()},
+            "max_false": MAX_FALSE, "windows": int(sum(len(w) for w in windows.values())),
+            "best": {r: choose(rows) for r, rows in (("laughter", laughter), ("scream", scream), ("gasp", gasp))},
+            "scan": laughter + scream + gasp}
+
+
+def tune_report(result: dict) -> str:
+    groups = list(result["clips"])
+    head = ["| Rule | Level | Found | " + " | ".join(f"{g} opened" for g in groups) + " |",
+            "|---|---|---|" + "---|" * len(groups)]
+
+    def line(r):
+        rule = "no rival" if r["rivals"] == "none" else f"{r['ratio']:g} x {r['rivals']}"
+        mark = " **best under the limit**" if r == result["best"][r["reaction"]] else ""
+        cells = [_pct(r["opened"][g], result["clips"][g]) for g in groups]
+        return f"| {rule}{mark} | {r['level']:g} | {_pct(r['found'], r['of'])} | " + " | ".join(cells) + " |"
+
+    lines = []
+    for reaction in REACTIONS:
+        rows = [r for r in result["scan"] if r["reaction"] == reaction]
+        lines += [f"\n### {reaction}: every level, no rival\n", *head,
+                  *[line(r) for r in rows if r["rivals"] == "none"]]
+        ruled = [r for r in rows if r["rivals"] != "none"]
+        if ruled:
+            best = []
+            for key in dict.fromkeys((r["rivals"], r["ratio"]) for r in ruled):
+                pick = choose([r for r in ruled if (r["rivals"], r["ratio"]) == key])
+                if pick:
+                    best.append(pick)
+            lines += [f"\n### {reaction} with a rival: best allowed level per rule "
+                      f"(every other group at or under {result['max_false']:.0%})\n", *head, *[line(r) for r in best]]
+    return "\n".join(lines)
 
 
 # ---- reports ----------------------------------------------------------------------------
@@ -410,26 +544,44 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     f = sub.add_parser("fetch", help="pick the clips and download them (needs the labels)")
     f.add_argument("--cache", type=Path, required=True)
+    f.add_argument("--split", choices=SPLITS, default="eval")
+    f.add_argument("--labels", type=Path, help="folder with FSD50K's eval.csv and dev.csv "
+                   "(default: CACHE/labels/FSD50K.ground_truth)")
     f.add_argument("--per-group", type=int, default=40)
     f.add_argument("--max-clip-bytes", type=int, default=2_000_000)
     f.add_argument("--max-total-bytes", type=int, default=300_000_000)
     r = sub.add_parser("run", help="score the fetched clips through ServerSession")
     r.add_argument("--cache", type=Path, required=True)
     r.add_argument("--json", type=Path, help="write every row here")
+    r.add_argument("--detector", choices=sorted(DETECTORS), default="current",
+                   help="detector-v1 re-runs the settings PR #50 measured")
+    t = sub.add_parser("tune", help="scan rules and levels on fetched dev clips")
+    t.add_argument("--cache", type=Path, required=True)
+    t.add_argument("--json", type=Path, help="write the whole scan here")
     args = ap.parse_args(argv)
     if args.cmd == "fetch":
-        info = fetch(args.cache.expanduser(), args.per_group, args.max_clip_bytes, args.max_total_bytes)
+        info = fetch(args.cache.expanduser(), args.per_group, args.max_clip_bytes, args.max_total_bytes,
+                     split=args.split, labels_dir=args.labels.expanduser() if args.labels else None)
         print(json.dumps({g: len(ids) for g, ids in info["groups"].items()} | {"bytes": info["bytes"]}))
         return 0
     from encore_server.models import YamnetModel
 
+    if args.cmd == "tune":
+        result = tune(args.cache.expanduser(), YamnetModel())
+        print(json.dumps({k: result[k] for k in ("split", "clips", "windows", "max_false")}))
+        print(tune_report(result))
+        if args.json:
+            args.json.write_text(json.dumps(result, indent=1))
+        return 0
     clips = load_clips(args.cache.expanduser())
     model = CachedModel(YamnetModel())
+    config = DETECTORS[args.detector]
     started = time.time()
-    rows = evaluate(clips, model, progress=lambda i, n: print(f"\r{i}/{n} clips", end="", file=sys.stderr))
+    rows = evaluate(clips, model, config=config,
+                    progress=lambda i, n: print(f"\r{i}/{n} clips", end="", file=sys.stderr))
     print(file=sys.stderr)
-    info = {"clips": len(clips), "rows": len(rows), "model": model.name, "detector": DetectorConfig().name,
-            "trigger": DetectorConfig().trigger, "face_server_laughter": TabRules.strong_audio,
+    info = {"clips": len(clips), "rows": len(rows), "model": model.name, "detector": config.name,
+            "trigger": config.trigger, "face_server_laughter": TabRules.strong_audio,
             "windows_scored": len(model.calls_ms),
             "model_ms_median": round(statistics.median(model.calls_ms), 1) if model.calls_ms else None,
             "wall_s": round(time.time() - started)}
