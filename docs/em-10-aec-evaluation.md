@@ -74,7 +74,21 @@ No processor made the echo alone trigger laughter (0 false windows everywhere).
 - The room is a linear synthetic response; real speakers add non-linear distortion a linear filter cannot remove. Next: a real room recording (EM-10 acceptance case 2).
 - Playback was speech only; music and effects are untested with YAMNet.
 - With no echo the canceller still loses some windows (56 vs the 61 of a pure shift): the background is sometimes copied during a laugh. A stricter copy rule is the next tuning step.
-- The canceller is not wired into the app; the live microphone still uses the GStreamer path. Wiring it in, and letting the user switch it (R12, EM-21), come next.
+- Wired in as the player's fallback when `webrtcdsp`/`webrtcechoprobe` are missing (section 8). Letting the user switch it (R12, EM-21) comes next.
+
+## 8. In the app: the player's fallback
+
+`player/pipeline.py` keeps the WebRTC filter when both plugins exist. Otherwise (`echo_reference == "linear"`, as on Ubuntu 24.04 and macOS) a buffer probe on the volume's output copies each buffer (mixed to mono S16, 48 kHz) just before the audio sink plays it, the way `webrtcechoprobe` would. `player/linear_echo.py` keeps those samples by running time (`ReferenceBuffer`, 2 s) and feeds them with each 10 ms microphone block to the linear canceller (768-sample blocks, 256 ms tail). Status follows the WebRTC filter: `warming_up` for 500 ms, then `active`; `reference_unavailable` when the reference does not cover the block, after a seek, while paused, or at speeds other than 1x.
+
+**The reference is read from a cursor, not looked up per block.** The microphone's timestamps are whole milliseconds and the capture callback jitters, and 1 ms is 48 samples. Looking up each block's reference by its own timestamp made the echo path seem to jump by a few samples every 10 ms; with ±3 ms jitter the canceller removed nothing (0.0 dB, `test_reading_the_reference_by_each_timestamp_would_have_failed`). `LinearEchoPath` therefore places only the first block by its timestamp and then advances by exactly the samples consumed: 43.8 dB with the same jitter, the same as with exact timestamps. A timestamp more than 20 ms from the cursor (a dropped block, clock drift) moves the cursor and restarts the filter. The cursor sits 5 ms before the timestamp, which the filter sees as 5 ms more echo delay; a slightly late timestamp then neither asks for audio not played yet nor puts the echo ahead of its reference.
+
+The first version of this wiring (PR #47, c699ea6) looked up each block by timestamp, and its playback test cut every simulated microphone block at whatever the position happened to be. Both made the echo path move every block. The test now cuts back-to-back blocks from one simulated recording, as a real microphone delivers them.
+
+The tap itself took two more CI runs. First it was a `tee` to a synced `appsink` behind a 200 ms leaky queue: the filter never left `warming_up`, because the sink branch's own queue lets upstream decode about 1 s ahead, so the leaky queue kept dropping audio before its time came. Then the `appsink` was unsynced: the reference arrived, but the pipeline now had a second sink running about 1 s ahead. Its position became the player's position, so the test's simulated echo was a second off the reference (0.0 dB) and two `test_player_pipeline.py` tests failed (pause did not settle; replay after the end reported 1006 ms instead of near 0). The probe needs no second sink, so the pipeline is the same as before PR #47 apart from the probe.
+
+Known costs: the cleaned microphone audio is 16 ms behind the raw audio (one block). Two separate clocks (sound card and microphone) can drift apart by up to about 0.1 ms per second, so on a long session the 20 ms rule restarts the filter every few minutes (about 3 s to regain 15 dB on the CI signal).
+
+Tests: `client/tests/test_linear_echo.py` (reference timing, gaps, seeks, threads, warm-up, 48 kHz cancellation, jittery timestamps, the per-block lookup it replaces, re-anchoring, pass-through; NumPy only) and `test_echo_capture.py::LinearEchoPlaybackTest`, the WebRTC test's scene run through the real player where the plugins are missing (CI on Ubuntu).
 
 ## Reproduce (macOS)
 

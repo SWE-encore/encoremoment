@@ -18,7 +18,7 @@ the synthetic cases it kept less of the reaction (corr 0.55 vs 0.95 at 120 ms).
 Measured (16 kHz, 60 ms room, 0.5 s chunks), echo removed after 3 / 9 / 24 s:
 speech-like 14 / 22 / 28 dB, AM 220 Hz tone 26 / 29 / 38 dB, white noise 25 / 64 / 103 dB.
 Output lags the input by exactly one block (16 ms at 16 kHz), without gaps.
-Not wired into the app yet: the live microphone still uses the GStreamer path.
+The player uses it when the WebRTC plugins are missing (player/linear_echo.py).
 """
 
 from __future__ import annotations
