@@ -373,7 +373,12 @@ class PlayerPipeline:
             return pcm, "reference_unavailable"
         now_ns = clock.get_time() - pipeline.get_base_time()
         pts = now_ns - (self.clock() - capture_ms) * Gst.MSECOND
-        if pts < 0 or not -250 * Gst.MSECOND <= self._reference_end_ns - pts <= 500 * Gst.MSECOND:
+        # live_mic passes a whole microphone read at once, and its size depends on the platform:
+        # Qt's PulseAudio source reads 500 ms at a time. The linear path keeps 2 s of reference,
+        # so what must be close to the tap is the block's newest sample. Measured from the
+        # oldest one, a 500 ms read was always more than 500 ms behind the tap and rejected.
+        edge = pts + len(pcm) // 2 * Gst.SECOND // 48_000 if self.echo_reference == "linear" else pts
+        if pts < 0 or not -250 * Gst.MSECOND <= self._reference_end_ns - edge <= 500 * Gst.MSECOND:
             self.reset_echo()
             return pcm, "reference_unavailable"
         if self.echo_reference == "linear":
