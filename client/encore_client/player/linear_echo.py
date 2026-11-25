@@ -21,7 +21,7 @@ from ..sensing.linear_aec import LinearEchoCanceller
 RATE = 48_000                 # the player's audio branch and the microphone blocks
 NS_PER_SAMPLE = 1_000_000_000 / RATE
 WARMUP_MS = 500               # same rule as the WebRTC filter (player/echo.py)
-KEEP_MS = 2_000               # reference history; the mic may lag playback by up to 500 ms
+KEEP_MS = 3_000               # the tap runs up to ~1 s ahead; the mic may lag by up to 500 ms
 BLOCK = 768                   # 16 ms at 48 kHz: the canceller's fixed output delay
 TAPS = 12_288                 # 256 ms echo tail at 48 kHz
 DRIFT_MS = 20                 # re-anchor when a block's timestamp is this far from the cursor

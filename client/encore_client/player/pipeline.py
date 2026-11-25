@@ -12,7 +12,7 @@ The audio branch runs at 48 kHz through webrtcechoprobe so the echo
 canceller (R1) can process microphone blocks inside this same
 pipeline, which the probe requires (Submission B, Requirement 1).
 Ubuntu 24.04 and Homebrew ship no probe, so then the branch copies the
-played audio to an appsink and the linear canceller (linear_echo.py, EM-10)
+audio to an unsynced appsink and the linear canceller (linear_echo.py, EM-10)
 cancels against it by running time. Either tap sits after the volume control
 so the reference matches what the speakers actually play.
 
@@ -296,14 +296,18 @@ class PlayerPipeline:
                     f"volume name=volume ! webrtcechoprobe name={self.probe_name} ! {self.audio_sink_desc}"
                 )
             else:
-                # Copy what is played, after the volume, into an appsink at the same running
-                # time. The leaky queue keeps a slow reader from ever stalling playback.
+                # Copy what will be played, after the volume, into an appsink. sync=false: the
+                # copy arrives as soon as it is decoded, up to the sink queue's length (about
+                # 1 s) ahead, and ReferenceBuffer files it by running time. A synced appsink
+                # behind a leaky queue would never catch up: the sink branch's queue lets
+                # upstream run 1 s ahead, so the small leaky queue dropped every buffer before
+                # its time came and almost nothing reached the reference.
                 desc = (
                     f"queue ! audioconvert ! audioresample ! {AUDIO_CAPS} ! volume name=volume ! "
                     f"tee name=echo_tee ! queue ! {self.audio_sink_desc} "
-                    "echo_tee. ! queue leaky=downstream max-size-time=200000000 max-size-buffers=0 "
+                    "echo_tee. ! queue leaky=downstream max-size-time=2000000000 max-size-buffers=0 "
                     "max-size-bytes=0 ! audioconvert ! audio/x-raw,format=S16LE,rate=48000,channels=1 ! "
-                    "appsink name=echo_ref sync=true emit-signals=true max-buffers=50 drop=true"
+                    "appsink name=echo_ref sync=false emit-signals=true max-buffers=0 drop=false"
                 )
         else:
             desc = "fakesink async=false sync=false"
@@ -334,7 +338,7 @@ class PlayerPipeline:
         return Gst.PadProbeReturn.OK
 
     def _reference_sample(self, sink):
-        """Linear mode: keep the played samples by running time (GStreamer streaming thread)."""
+        """Linear mode: keep the samples to be played by running time (GStreamer streaming thread)."""
         sample = sink.emit("pull-sample")
         if sample is None:
             return Gst.FlowReturn.OK
@@ -368,13 +372,18 @@ class PlayerPipeline:
             return pcm, "reference_unavailable"
         now_ns = clock.get_time() - pipeline.get_base_time()
         pts = now_ns - (self.clock() - capture_ms) * Gst.MSECOND
-        if pts < 0 or not -250 * Gst.MSECOND <= self._reference_end_ns - pts <= 500 * Gst.MSECOND:
-            self.reset_echo()
-            return pcm, "reference_unavailable"
         if self.echo_reference == "linear":
+            # The tap runs ahead of the speakers, so its end says nothing about the
+            # microphone's lag; the buffer itself knows whether the block is covered.
+            if pts < 0:
+                self.reset_echo()
+                return pcm, "reference_unavailable"
             if self._echo is None:
                 self._echo = LinearEchoPath(self._reference)
             return self._echo.process(pcm, pts)
+        if pts < 0 or not -250 * Gst.MSECOND <= self._reference_end_ns - pts <= 500 * Gst.MSECOND:
+            self.reset_echo()
+            return pcm, "reference_unavailable"
         if self._echo_failed:
             return pcm, "reference_unavailable"
         try:
