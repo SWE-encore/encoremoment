@@ -5,10 +5,11 @@ import threading
 import numpy as np
 import pytest
 
+from encore_client.player import linear_echo
 from encore_client.player.linear_echo import (
-    BLOCK, DRIFT_MS, RATE, TAPS, WARMUP_MS, LinearEchoPath, ReferenceBuffer,
+    BLOCK, DRIFT_MS, MAX_BULK_MS, RATE, TAPS, TARGET_MS, WARMUP_MS, LinearEchoPath, ReferenceBuffer,
 )
-from encore_client.sensing.linear_aec import LinearEchoCanceller
+from encore_client.sensing.linear_aec import LinearEchoCanceller, estimate_delay
 
 MS = 1_000_000
 TEN_MS = RATE // 100
@@ -199,5 +200,63 @@ def test_with_no_echo_the_audience_passes_through_one_block_late():
     rng = np.random.default_rng(12)
     far = rng.normal(0, 3000, RATE * 3)
     near = rng.normal(0, 2000, RATE * 3).astype(np.int16)
-    out, _, _ = blocks(near, far)
+    out, _, path = blocks(near, far)
     np.testing.assert_allclose(out[BLOCK:], near[:-BLOCK], atol=1)
+    assert path.realigns == 0 and path.bulk_ms == 0
+
+
+# ---- bulk delay ---------------------------------------------------------------------------
+# The tap is before the audio sink's buffer (160-200 ms on PulseAudio), so in a real room the
+# echo can arrive later than the filter's 256 ms tail reaches.
+
+def erle_late(echo: np.ndarray, out: np.ndarray, start_s: int = 9, stop_s: int = 11) -> float:
+    a, b = RATE * start_s, RATE * stop_s
+    return 10 * np.log10(np.mean(echo[a:b] ** 2) / max(np.mean(out[a + BLOCK:b + BLOCK] ** 2), 1e-9))
+
+
+def test_estimate_delay_finds_an_echo_and_is_unsure_without_one():
+    rng = np.random.default_rng(21)
+    far = rng.normal(0, 3000, RATE * 2)
+    window, search = RATE, RATE * 3 // 4
+    echo = room48(far, delay_ms=300)
+    lag, confidence = estimate_delay(echo[-window:], far[-(window + search):], decimate=3)
+    assert abs(lag - 300 * RATE // 1000) <= 3 and confidence > linear_echo.CONFIDENT
+    _, unrelated = estimate_delay(rng.normal(0, 3000, window), far[-(window + search):], decimate=3)
+    assert unrelated < linear_echo.CONFIDENT
+    assert estimate_delay(np.zeros(window), far[-(window + search):]) is None
+
+
+def test_an_echo_beyond_the_tail_is_found_and_cancelled(monkeypatch):
+    far = np.random.default_rng(22).normal(0, 3000, RATE * 12)
+    echo = room48(far, delay_ms=300)
+    out, states, path = blocks(echo.astype(np.int16), far)
+    print(f"300 ms echo: bulk {path.bulk_ms} ms, {erle_late(echo, out):.1f} dB")
+    assert path.realigns == 1
+    assert abs(path.bulk_ms - (300 - linear_echo.LEAD_MS - TARGET_MS)) <= 2   # LEAD_MS is already early
+    assert erle_late(echo, out) > 20
+    assert states[-1] == "active"
+    # Without the alignment the same room is not cancelled at all.
+    monkeypatch.setattr(linear_echo, "CONFIDENT", float("inf"))
+    unaligned, _, _ = blocks(echo.astype(np.int16), far)
+    assert erle_late(echo, unaligned) < 3
+
+
+def test_the_measured_delay_survives_a_new_path():
+    # The player makes a new path after every seek; it passes the bulk delay on.
+    path = LinearEchoPath(played(np.zeros(TEN_MS * 10)), bulk_ms=120)
+    assert path.bulk_ms == 120
+
+
+def test_an_echo_too_late_to_reach_is_reported_uncancelled():
+    far = np.random.default_rng(23).normal(0, 3000, RATE * 5)
+    echo = room48(far, delay_ms=MAX_BULK_MS + 40)
+    mic = echo.astype(np.int16)
+    out, states, path = blocks(mic, far)
+    assert path.out_of_range and path.realigns == 0
+    assert states[-1] == "uncancelled"
+    np.testing.assert_array_equal(out[-TEN_MS:], mic[-TEN_MS:])     # passed through, not filtered
+
+
+def test_near_and_far_of_different_lengths_are_refused():
+    with pytest.raises(ValueError):
+        LinearEchoCanceller().process(np.zeros(100), np.zeros(99))

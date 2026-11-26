@@ -173,6 +173,12 @@ class SessionArchive:
         if await self.stage(session):
             self.start()
 
+    def forget(self, session_id: str) -> None:
+        """The server dropped this session after staging it: a new session with
+        the same ID starts its cursors from 0 again. The stage lock is kept, so
+        that new session never stages twice at once."""
+        self._cursors.pop(session_id, None)
+
     async def _retry(self) -> None:
         delay = 1
         while not self._stopping.is_set():
