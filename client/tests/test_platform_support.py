@@ -6,21 +6,22 @@ from pathlib import Path
 import pytest
 
 from encore_client.platform_support import (
-    camera_unavailable_reason, desktop_capture, native_microphone_format, os_label,
+    camera_unavailable_reason, desktop_capture, microphone_buffer_ms, native_microphone_format, os_label,
 )
 
 PACKAGE = Path(__file__).resolve().parents[1] / "encore_client"
 
 
-@pytest.mark.parametrize("platform, capture, native, label", [
-    ("linux", True, False, "Linux"),
-    ("darwin", False, True, "macOS"),
-    ("win32", False, False, "Windows"),
-    ("freebsd14", False, False, "freebsd14"),
+@pytest.mark.parametrize("platform, capture, native, buffer_ms, label", [
+    ("linux", True, False, 100, "Linux"),
+    ("darwin", False, True, 500, "macOS"),
+    ("win32", False, False, 500, "Windows"),
+    ("freebsd14", False, False, 500, "freebsd14"),
 ])
-def test_each_os_gets_its_capabilities(platform, capture, native, label):
+def test_each_os_gets_its_capabilities(platform, capture, native, buffer_ms, label):
     assert desktop_capture(platform) is capture
     assert native_microphone_format(platform) is native
+    assert microphone_buffer_ms(platform) == buffer_ms
     assert os_label(platform) == label
 
 

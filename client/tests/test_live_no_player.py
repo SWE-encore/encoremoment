@@ -116,3 +116,7 @@ def test_live_cli_connects_microphone_to_the_selected_player(monkeypatch, no_pla
     assert source.aec_status == ("off" if no_player else "reference_unavailable")
     assert workspace.live_microphone is source
     assert workspace.add_microphone.call_args.args[0].device is audio_input.return_value
+    # R11: before Start, the window says the microphone is analysed on the server (EM-20).
+    notice = workspace.sensing.setText.call_args.args[0]
+    assert notice.startswith("Start enables microphone analysis at ")
+    assert "Enable camera to record and share audience frames." in notice

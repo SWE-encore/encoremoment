@@ -197,10 +197,12 @@ def test_native_format_is_used_when_16khz_is_unsupported():
         def description(self): return "Native-only test microphone"
     # Use a fake QAudioSource so no physical microphone is opened.
     from unittest.mock import patch
+    from encore_client.platform_support import microphone_buffer_ms
     with patch("PySide6.QtMultimedia.QAudioSource") as source:
         QtAudioInput(LiveMicrophone(FakeSession()), NativeOnly())
         assert source.call_args.args[1] == fmt
-        source.return_value.setBufferSize.assert_called_once_with(192_000)
+        # 48 kHz stereo float: 384 bytes per ms
+        source.return_value.setBufferSize.assert_called_once_with(384 * microphone_buffer_ms())
 
 
 class _Offers16kAndNative:
