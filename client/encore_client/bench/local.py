@@ -106,7 +106,7 @@ class LocalServer:
 
         default = DetectorConfig()
         name = default.name
-        if triggers != default.trigger:  # results from other thresholds must not look like detector-v1
+        if triggers != default.trigger:  # results from other thresholds must not carry the default name
             name = "bench " + " ".join(f"{k}={v:.2f}" for k, v in sorted(triggers.items()))
         self.config = DetectorConfig(name=name, trigger=dict(triggers))
         self.model_name = model.name

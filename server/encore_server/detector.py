@@ -33,9 +33,11 @@ REACTIONS = ("laughter", "scream", "gasp")
 
 @dataclass
 class DetectorConfig:
-    name: str = "detector-v1"
+    # v2 (EM-11): laughter .4 -> .25, chosen on FSD50K dev clips (docs/em-11-evaluation.md).
+    # Scream and gasp keep their v1 levels.
+    name: str = "detector-v2"
     trigger: dict[str, float] = field(
-        default_factory=lambda: {"laughter": 0.4, "scream": 0.4, "gasp": 0.3}
+        default_factory=lambda: {"laughter": 0.25, "scream": 0.4, "gasp": 0.3}
     )
     release_ratio: float = 0.6
     refire_ms: int = 2_000

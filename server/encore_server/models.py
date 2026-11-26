@@ -85,17 +85,25 @@ class YamnetModel:
         self._model = hub.load(path)
         with open(self._model.class_map_path().numpy().decode(), newline="") as f:
             labels = [row["display_name"] for row in csv.DictReader(f)]
+        self.labels = labels
         missing = [n for names in YAMNET_CLASSES.values() for n in names if n not in labels]
         if missing:
             raise RuntimeError(f"YAMNet class map has no {missing}")
         self._index = {r: [labels.index(n) for n in names] for r, names in YAMNET_CLASSES.items()}
 
-    def __call__(self, pcm: bytes) -> dict[str, float]:
+    def class_scores(self, pcm: bytes):
+        """Every class's score for one window, in class-map order (``self.labels``)."""
         np = self._np
         waveform = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
         scores, _, _ = self._model(waveform)
-        frame = scores.numpy().max(axis=0)  # a 0.975 s window is one YAMNet frame
+        return scores.numpy().max(axis=0)  # a 0.975 s window is one YAMNet frame
+
+    def from_class_scores(self, frame) -> dict[str, float]:
+        """One score per reaction: the highest among its classes (``YAMNET_CLASSES``)."""
         return {r: float(frame[idx].max()) for r, idx in self._index.items()}
+
+    def __call__(self, pcm: bytes) -> dict[str, float]:
+        return self.from_class_scores(self.class_scores(pcm))
 
 
 def load_model(name: str, *, yamnet_path: str | None = None):

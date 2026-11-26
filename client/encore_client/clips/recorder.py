@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,7 @@ HANDLE_MS = 5_000
 RETENTION_MS = 35_000
 BUDGET_BYTES = 128 * 1024 * 1024
 MAX_PENDING_JOBS = 128
+FACE_HISTORY = 20  # RGB frames kept for audio pairing: 2 s at the camera's 10 fps cap
 
 
 def ranges(intervals):
@@ -81,6 +83,7 @@ class DesktopRecorder:
         self.clock = clock
         self.budget = budget_bytes
         self.listener = self.camera = self.directory = self.generation = self.face = None
+        self.faces = deque(maxlen=FACE_HISTORY)  # recent (capture ms, RGB), oldest first
         self.activated_ms = None
         self.microphone_on = None
         self.error = None
@@ -122,6 +125,7 @@ class DesktopRecorder:
         if self.generation != generation:
             return
         self.generation = self.face = self.activated_ms = None
+        self.faces.clear()
         if self.camera is not None:
             self.camera.close()
             self.camera = None
@@ -140,9 +144,23 @@ class DesktopRecorder:
             self.directory = None
         self.listener.on_stopped(generation)
 
-    def latest_face(self):
-        if self._admitted() and self.face and 0 <= self.clock() - self.face[0] < 1200:
-            return self.generation, *self.face
+    def latest_face(self, start_ms=None, end_ms=None):
+        """The newest camera frame as (generation, capture ms, RGB), or None.
+
+        With a span, the newest frame captured in [start_ms, end_ms): the span
+        of an audio chunk. A chunk is sent only after the read that completes
+        it, so by then the newest frame can be later than the whole chunk."""
+        if not self._admitted():
+            return None
+        if start_ms is None:
+            if self.face and 0 <= self.clock() - self.face[0] < 1200:
+                return self.generation, *self.face
+            return None
+        for image_ms, rgb in reversed(self.faces):
+            if image_ms < start_ms:
+                break
+            if image_ms < end_ms:
+                return self.generation, image_ms, rgb
         return None
 
     def feed_audio(self, pcm, capture_ms):
@@ -177,6 +195,8 @@ class DesktopRecorder:
                     if self.face is None:
                         self.activated_ms = face[0]
                         self.listener.on_first_frame(self.generation, face[0])
+                    if not self.faces or face[0] > self.faces[-1][0]:
+                        self.faces.append(face)
                     self.face = face
                     if self.clock() - face[0] > 3_000:
                         raise OSError("no new camera frames for 3 seconds")

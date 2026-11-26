@@ -27,8 +27,8 @@ def test_event_capture_pairs_current_camera_and_falls_back_to_audio():
     image = bytes(RGB_BYTES)
     created = []
 
-    def frame():
-        created.append(True)
+    def frame(start_ms, end_ms):
+        created.append((start_ms, end_ms))
         return 1, 1120, image
 
     s.camera_frame = frame
@@ -43,7 +43,7 @@ def test_event_capture_pairs_current_camera_and_falls_back_to_audio():
     assert not packets[-1].startswith(b"EMV1")  # same old frame is never sent for a later chunk
     s.set_sensor("camera", False)
     assert s.send_audio(pcm, 2000)
-    assert len(created) == 2
+    assert created == [(1000, 1500), (1500, 2000)]  # each chunk asks for a frame of its own span
     assert all(not p.startswith(b"EMV1") for p in (packets[0], packets[-1]))
     assert server.audio_chunks == 4 and server.invalid == 0
     s._on_message(json.dumps({"kind": "demo_scores", "laughter": .1}))
@@ -67,7 +67,7 @@ def test_camera_image_belongs_to_one_audio_interval_and_one_connection():
     s.set_sensor("camera", True)
     image_ms = 1500
     rgb = bytes(RGB_BYTES)
-    s.camera_frame = lambda: (1, image_ms, rgb)
+    s.camera_frame = lambda _start, _end: (1, image_ms, rgb)  # even if the source ignores the span
     pcm = bytes(16_000)
 
     def send(start):
@@ -111,7 +111,7 @@ def test_workspace_routes_accepted_event_and_timeline_playback(tmp_path, monkeyp
         def set_listener(self, listener):
             self.listener = listener
 
-        def latest_face(self):
+        def latest_face(self, start_ms=None, end_ms=None):
             return None
 
         def poll(self, events):

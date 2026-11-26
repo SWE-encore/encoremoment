@@ -36,8 +36,8 @@ def test_one_burst_opens_and_finishes():
 
 
 def test_hysteresis_keeps_a_wobbling_reaction_open():
-    det = ReactionDetector()  # trigger 0.4, release 0.24
-    events = run(det, [0.5, 0.3, 0.25, 0.3, 0.1, 0.1, 0.1, 0.1])
+    det = ReactionDetector()  # laughter trigger 0.25, release 0.15
+    events = run(det, [0.5, 0.2, 0.16, 0.2, 0.1, 0.1, 0.1, 0.1])
     assert [e["phase"] for e in events] == ["OPEN", "FINAL"]
     assert events[1]["capture"]["end_ms"] == 10_000 + 3 * HOP_MS + WINDOW_MS
 
@@ -52,7 +52,7 @@ def test_continuous_laughter_refires_every_refire_ms():
 
 
 def test_below_trigger_never_opens():
-    assert run(ReactionDetector(), [0.39] * 20) == []
+    assert run(ReactionDetector(), [0.24] * 20) == []
 
 
 def test_close_all_finishes_open_events():

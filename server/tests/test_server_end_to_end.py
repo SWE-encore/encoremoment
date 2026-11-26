@@ -84,7 +84,7 @@ def test_a_laugh_in_the_audio_comes_back_as_a_mapped_event(server, tmp_path):
     (event,) = session.view.events.values()
     assert event["reaction"]["type"] == "laughter"
     assert event["generations"] == {"microphone": 1, "camera": None}
-    assert event["source"] == {"model": "loudness-standin", "config": "detector-v1", "aec": "off"}
+    assert event["source"] == {"model": "loudness-standin", "config": "detector-v2", "aec": "off"}
     cap, pb = event["capture"], event["playback"]
     assert 11_000 <= cap["start_ms"] <= 12_000 and cap["end_ms"] >= 14_000  # the tone is at 12-14 s
     assert pb["status"] == "mapped"

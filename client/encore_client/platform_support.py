@@ -25,6 +25,15 @@ def native_microphone_format(platform: str | None = None) -> bool:
     return _name(platform) == "darwin"
 
 
+def microphone_buffer_ms(platform: str | None = None) -> int:
+    """The Qt microphone buffer. Qt 6.8's PulseAudio source asks the server for
+    fragments of this size and reads on a timer of the same period. Linux used
+    500 ms: every 500 ms chunk then left ~350 ms after its end, because the first
+    150 ms were discarded (``SETTLE_MS``). 100 ms reads keep that under 100 ms.
+    Other systems keep 500 ms; their read periods were not measured."""
+    return 100 if _name(platform).startswith("linux") else 500
+
+
 def os_label(platform: str | None = None) -> str:
     name = _name(platform)
     if name == "darwin":
