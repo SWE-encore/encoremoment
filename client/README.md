@@ -22,7 +22,7 @@ The Encore Moment PC client (Python, PySide6, GStreamer). It currently contains 
 - Plays a local video file (MP4/H.264+AAC, WebM, MKV, …) with play/pause, seek (slider, ←/→ = ±5 s), speed (0.5–2×) and Space to toggle.
 - Sends a **playback anchor** whenever playback changes: opened (paused at 0), play, pause, seek landed, speed change, end of file, and every 10 s while playing. Anchors are `playback_anchor` messages from [`contracts/`](../contracts/README.md). They are shown in the window and can be written to a JSON Lines file.
 - **Epochs** follow the contract: a new epoch on every seek and every new file; pause, resume and speed change keep the epoch. `AnchorTracker.map_time(capture_ms)` turns any capture time into `(epoch, content timecode)`, or `None` if no anchor existed yet (contract status `pending`).
-- Routes audio through `volume ! webrtcechoprobe` at 48 kHz in the same top-level pipeline, so the microphone branch with `webrtcdsp` can be added there later (Submission B, R1). If the probe plugin is missing the player still plays and the status bar says the echo reference is unavailable.
+- Routes audio through `volume ! webrtcechoprobe` at 48 kHz in the same top-level pipeline, so the microphone branch with `webrtcdsp` can be added there later (Submission B, R1). If the probe plugin is missing, a buffer probe after `volume` copies what is about to be played, and the linear canceller (`player/linear_echo.py`, EM-10) uses that as the reference; the status bar says so.
 
 Session start/end and result delivery are in `encore_client/session/` (EM-23, see below). Not included yet: camera/microphone capture, playlists or subtitles.
 
@@ -36,6 +36,19 @@ python3 -m venv --system-site-packages .venv   # system site packages provide Py
 ```
 
 `gstreamer1.0-libav` is optional but widens codec support. Without it, H.264 uses `openh264dec`/`vah264dec` and AAC uses `faad` from the other plugin sets.
+
+## Platforms
+
+`encore_client/platform_support.py` makes every OS decision; no other module reads `sys.platform` (`tests/test_platform_support.py` checks this).
+
+| Feature | Linux (Ubuntu 24.04) | macOS |
+|---|---|---|
+| Live microphone (`--mic`) | Qt at 16 kHz | Native format, resampled with soxr (Qt's 16 kHz path lost ~27% of the audio, #40) |
+| Audience-camera recorder and clips | GStreamer `v4l2src` | Not available; the camera panel says so |
+| Content player (GStreamer) | Yes | Not set up; use `--no-player` |
+| Session, highlights, saved clips, test bench | Yes | Yes |
+
+macOS setup that has been used: Python 3.12 (`PySide6==6.8.3` has no wheel for 3.13+), `brew install ffmpeg`, then `python3.12 -m venv .venv` and the install below. On a MacBook Air (2026-11-24) the client tests gave 247 passed, 1 failed (the restart window test, fixed with this table), 12 skipped: ten need PyGObject/GStreamer, one ffmpeg, one the GStreamer WebRTC echo plugins.
 
 ## Run
 
@@ -137,6 +150,24 @@ Stop closes the capture device immediately while waiting for final events.
 A lost server connection also stops capture, preserves the last recording for
 saving, and leaves the disconnect reason visible. Press Start to begin a new run.
 
+## Why a clip has no footage
+
+Highlights, Saved clips and the clip plan show one wording per `reason` code (`REASON_TEXT` in `clips/model.py`):
+
+| Code | Written by | Shown as |
+|---|---|---|
+| `camera_off` | recorder, clip plan | camera was off |
+| `camera_stopped` | recorder, clip plan | camera was stopped during the clip |
+| `unknown_camera_generation` | clip plan | camera state unknown |
+| `before_camera_activation` | clip plan (partial) | camera turned on late |
+| `no_footage` | recorder | no footage was recorded |
+| `too_many_pending_clips` | recorder | not recorded: too many clips were waiting |
+| `interrupted_capture` | crash recovery (`clips/storage.py`) | recording stopped when the app closed |
+| any other text | recorder export errors | `export failed: …`, one line of at most 80 characters |
+| none | older index rows | export failed or no footage |
+
+A partial clip lists up to three missing ranges; with more it shows the total (`missing 2.1 s in 59 places`), and Saved clips lists the ranges in its detail view. `tests/test_clip_reasons.py` scans the recorder, recovery and contract sources and fails when a new code has no wording.
+
 ## Test
 
 ```sh
@@ -167,7 +198,7 @@ The player tests generate their own clips with ffmpeg, play them headless, and c
 
 ## Known limits and risks
 
-- **Echo cancellation plugin missing on Ubuntu 24.04.** `gstreamer1.0-plugins-bad` 1.24.2 there does not ship `webrtcdsp`/`webrtcechoprobe`, and no other apt package provides them. R1 needs them: build that plugin from source against `libwebrtc-audio-processing`, use a distribution that packages it, or choose another echo-cancel route (for example PipeWire's echo-cancel module). This decision belongs to R1 (EM-10).
+- **Echo cancellation plugin missing on Ubuntu 24.04.** `gstreamer1.0-plugins-bad` 1.24.2 there does not ship `webrtcdsp`/`webrtcechoprobe`, and no other apt package provides them. R1 needs them: build that plugin from source against `libwebrtc-audio-processing`, use a distribution that packages it, or choose another echo-cancel route (for example PipeWire's echo-cancel module). This decision belongs to R1 (EM-10). Homebrew GStreamer 1.28.9 on macOS lacks them too. `docs/em-10-aec-evaluation.md` measures the alternatives with YAMNet: WebRTC AEC3 (`pywebrtc-audio`) suppresses laughter during playback, while the linear canceller in `encore_client/sensing/linear_aec.py` keeps most of it; the player falls back to it when the plugins are missing.
 - Anchor capture time is taken when GStreamer reports the change, without subtracting audio output latency (typically tens of ms). The 10 s heartbeat bounds drift.
 - Frames are copied into Qt as RGBx at full resolution. Fine for 1080p; 4K would need GL rendering or downscaling in `VIDEO_CAPS`.
 - A paused frame can be about two frames ahead of the reported position because of the sink's one-buffer queue.

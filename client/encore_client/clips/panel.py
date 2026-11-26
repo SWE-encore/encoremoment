@@ -5,7 +5,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import QLabel, QListWidget, QMessageBox, QPushButton, QVBoxLayout, QWidget
 from .deletion import DeletionManager
-from .model import ClipStatus, effective_label, load_index, playable_path
+from .model import ClipStatus, effective_label, gap_detail, load_index, playable_path
 
 
 class ClipPanel(QWidget):
@@ -113,6 +113,8 @@ class ClipPanel(QWidget):
             and clip.status not in (ClipStatus.DELETION_PENDING, ClipStatus.DELETED))
         text = (f"{clip.title}\n{self._status(clip)}" if clip
                 else "Select a saved clip" if self.clips else "No saved clips in this index.")
+        if clip is not None and clip.status is ClipStatus.PARTIAL and clip.gaps:
+            text += f"\n{gap_detail(clip.gaps)}"
         if self.deletions is not None and self.deletions.journal_error:
             text += f"\n⚠️ {self.deletions.journal_error}"
         self.detail.setText(text)
