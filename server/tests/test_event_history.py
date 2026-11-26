@@ -354,3 +354,49 @@ def test_websocket_final_survives_server_restart_and_session_id_reuse():
     finally:
         with psycopg.connect(dsn) as conn:
             conn.execute("DELETE FROM reaction_events WHERE session_id = %s", (sid,))
+
+
+def test_an_expired_lease_archives_the_final_and_a_reused_id_starts_over():
+    """A PC that drops and never returns: the lease ends the session and its FINAL
+    is archived. A later connection with that ID is a new session, archived too."""
+    import socket
+    import time
+    from websockets.sync.client import connect
+    from encore_server.server import EncoreServer, serve_in_thread
+
+    sid = "ses-history-lease"
+    store = Mock(spec=PostgresHistory)
+    app = EncoreServer(LoudnessModel(), history=store, idle_s=60, lease_s=0.3)
+    url, stop = serve_in_thread(app)
+
+    def until(check, what):
+        deadline = time.monotonic() + 5
+        while not check():
+            assert time.monotonic() < deadline, f"timed out waiting for {what}"
+            time.sleep(0.01)
+
+    def open_and_drop():
+        pc = Pc(sid)
+        ws = connect(url + f"/v1/sessions/{sid}/stream", open_timeout=5)
+        ws.send(pc.control("microphone", True, 1))
+        assert json.loads(ws.recv(timeout=5))["status"] == "applied"
+        for i in range(3):
+            ws.send(pc.audio(1, i * 500, LOUD))
+        opened = json.loads(ws.recv(timeout=5))["event"]
+        assert opened["phase"] == "OPEN"
+        ws.socket.shutdown(socket.SHUT_RDWR)  # a network drop: no close frame
+        ws.socket.close()
+        return opened["event_id"]
+
+    def archived():
+        return [(e["event_id"], e["phase"]) for call in store.save.await_args_list for e in call.args[1]]
+
+    try:
+        first = open_and_drop()
+        until(lambda: sid not in app.sessions, "the lease to end the first session")
+        until(lambda: archived() == [(first, "FINAL")], "the first FINAL to be archived")
+        second = open_and_drop()
+        assert second != first
+        until(lambda: archived() == [(first, "FINAL"), (second, "FINAL")], "the second FINAL to be archived")
+    finally:
+        stop()

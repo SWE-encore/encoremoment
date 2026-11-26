@@ -347,7 +347,9 @@ class Session:
         self._clock = clock
         self._factory = transport_factory
         self._transport: Transport | None = None
-        self.camera_frame: Callable[[], tuple[int, int, bytes] | None] | None = None
+        # (start_ms, end_ms) of an audio chunk -> the newest camera frame captured
+        # in that span as (generation, capture ms, 320x180 RGB), or None.
+        self.camera_frame: Callable[[int, int], tuple[int, int, bytes] | None] | None = None
         self._last_camera_frame: tuple[int, int] | None = None
         self._gap_since_ms: int | None = None
 
@@ -515,7 +517,9 @@ class Session:
         camera = self.view.sensors["camera"]
         paired = None
         if self.state is Conn.CONNECTED and camera.enabled and self.camera_frame is not None:
-            captured = self.camera_frame()
+            start_ms = header["capture_ms"]
+            end_ms = start_ms + -(-header["samples"] * 1000 // header["sample_rate"])  # rounded up
+            captured = self.camera_frame(start_ms, end_ms)
             if captured is not None:
                 generation, image_ms, rgb = captured
                 offset = (image_ms - header["capture_ms"]) * header["sample_rate"]
