@@ -33,6 +33,7 @@ class LiveMicrophone:
         self.on_pcm = on_pcm
         self._connection = None
         self.aec_status = "reference_unavailable" if player else "off"
+        self.aec_requested = True  # the user's echo cancellation choice (R12, sensing/aec_mode.py)
         self._raw_buf = bytearray()
         self._statuses = deque()
         self.chunk_bytes = AUDIO_RATE * chunk_ms // 1000 * 2
@@ -110,6 +111,16 @@ class LiveMicrophone:
                 self.on_pcm(bytes(self._raw_buf), self._run[1] + _ms(self._run[2]))
             self._reset_run()
         return changed
+
+    def cancel_echo(self, raw: bytes, capture_ms: int, connected: bool) -> tuple[bytes, str]:
+        """48 kHz capture blocks -> (analysis PCM, AEC status), R1 with the R12 switch.
+
+        Cancelled only while connected, with a player, and with cancellation
+        requested; otherwise the blocks pass unchanged as ``off``.
+        """
+        if not connected or self.player is None or not self.aec_requested:
+            return raw, "off"
+        return self.player.cancel_echo(raw, capture_ms)
 
     def feed(self, data: bytes, *, end_ms: int | None = None,
              raw_pcm: bytes | None = None, aec: str = "off") -> int:
@@ -365,7 +376,7 @@ class QtAudioInput:
                 raw = bytes(self._capture_buffer[:size])
                 del self._capture_buffer[:size]
                 end_ms -= len(self._capture_buffer) // 96
-                cleaned, status = mic.player.cancel_echo(raw, end_ms - size // 96) if connected else (raw, "off")
+                cleaned, status = mic.cancel_echo(raw, end_ms - size // 96, connected)
                 self._feed_resampled(raw, cleaned, status, end_ms)
 
     def _feed_resampled(self, raw: bytes, cleaned: bytes, status: str, end_ms: int) -> None:
