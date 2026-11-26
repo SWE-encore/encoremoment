@@ -139,7 +139,9 @@ def main():
     results = replay(ws_url, off)
     finals = [msg["event"] for msg in results if msg["event"]["phase"] == "FINAL"]
     model = "google/yamnet/1" if args.wav else "loudness-standin"
-    matches = [ev for ev in finals if ev["reaction"]["type"] == args.expect and ev["source"]["model"] == model]
+    # A loaded model's name ends in its weights' digest: google/yamnet/1@sha256:...
+    matches = [ev for ev in finals if ev["reaction"]["type"] == args.expect
+               and ev["source"]["model"].partition("@")[0] == model]
     if not matches or (not args.wav and len(finals) != 1):
         raise RuntimeError(f"Expected {args.expect} from {model}; got {finals}")
     if [m["cursor"] for m in results] != list(range(1, len(results) + 1)):

@@ -265,7 +265,8 @@ class ServerSession:
             }
             if self.tab_rules and ev["reaction"]["type"] == "laughter":
                 rules = self.tab_rules
-                ev["source"].update(model=self.model.name + ("+mediapipe-face" if ev["generations"]["camera"] is not None else ""),
+                face = getattr(self.face_model, "name", "mediapipe-face")
+                ev["source"].update(model=self.model.name + (f"+{face}" if ev["generations"]["camera"] is not None else ""),
                                     config=f"fusion-{rules.window_ms}ms-{rules.equivalent_hops}h-a{rules.strong_audio:g}-a{rules.assisted_audio:g}"
                                            f"-s{rules.smile:g}-q{rules.quiet_ms}")
             msg = {

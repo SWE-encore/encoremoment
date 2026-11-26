@@ -70,7 +70,7 @@ Microphone audio goes to the server in binary WebSocket frames, so samples are n
 | `event.capture.start_ms` / `end_ms` | Reaction interval. `end_ms` is `null` until `FINAL`. |
 | `event.generations` | Microphone and camera generation in effect at capture. `camera: null` = camera was off. |
 | `event.playback` | `{"status": "mapped", epoch, content_id, title, timecode_start_ms, timecode_end_ms}` or `{"status": "pending"}` while no anchor exists. Never guessed. |
-| `event.source` | Model ID, config version and AEC status (`active`, `warming_up`, `reference_unavailable`, `uncancelled`, `off`). |
+| `event.source` | Model ID, config version and AEC status (`active`, `warming_up`, `reference_unavailable`, `uncancelled`, `off`). The server's model ID ends in the weights' SHA-256 prefix, e.g. `google/yamnet/1@sha256:c59c5744e1b92942`. |
 
 All `*_ms` capture times are milliseconds on the **PC monotonic clock**. Network arrival time and wall-clock time are never used as capture time. Content timecode is `position_ms + rate × (t − anchor.capture_ms)` within one playback epoch.
 
@@ -113,7 +113,7 @@ These choices are not spelled out in the specification. They are in the contract
 3. **Open events may close after microphone off (R8, Yujeong).** Only new events from the old microphone generation are refused.
 4. **Normalized 0–1 scores (R3, Yujeong).** Confidence and all intensities are normalized to 0–1 by the server, so the UI can rank and display them without knowing the model.
 5. **Audio format (R1, R2, server owner).** 16 kHz mono 16-bit PCM in 0.5 s chunks, in binary frames. This is YAMNet's input; Submission B R1 still says 32 kHz, which was the PANNs input. Echo cancellation runs at 48 kHz on the PC before resampling, so the server never resamples.
-6. **Model naming.** `source.model` is a free string. The team chose YAMNet over PANNs on 2026-11-05 in Slack, but Submission B §III–IV still names PANNs. Nothing in this contract depends on which model is used.
+6. **Model naming.** `source.model` is a free string. The server appends `@sha256:` and 16 hex digits of each loaded model's digest (server/README.md), so the weights behind an event can be checked. The team chose YAMNet over PANNs on 2026-11-05 in Slack, but Submission B §III–IV still names PANNs. Nothing in this contract depends on which model is used.
 
 ## Changing the contract
 

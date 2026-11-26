@@ -43,6 +43,28 @@ class PairedDemo(unittest.TestCase):
             self.session._collect_face(grace=.5)
         return out
 
+    def test_a_face_assisted_event_names_both_models_by_their_digests(self):
+        from encore_server.models import tagged
+
+        class Face:
+            name = tagged("mediapipe-face", "b" * 64)
+
+            def __call__(face, rgb):
+                return self.smile
+
+        self.audio.name = tagged("google/yamnet/1", "a" * 64)
+        self.session.face_model = Face()
+        self.smile = .20
+        for i in range(15):
+            self.packet(i)
+            self.packet(i)
+        self.session.end()
+        events = self.session.results_after(0)
+        self.assertTrue(events)
+        self.assertTrue(all(not schema_errors(msg) for msg in events))  # fits source.model's 100 characters
+        self.assertEqual({m["event"]["source"]["model"] for m in events},
+                         {"google/yamnet/1@sha256:" + "a" * 16 + "+mediapipe-face@sha256:" + "b" * 16})
+
     def test_fusion_and_replay(self):
         for i in range(4):
             self.packet(i)
