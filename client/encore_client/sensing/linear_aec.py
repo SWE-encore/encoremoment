@@ -18,7 +18,7 @@ the synthetic cases it kept less of the reaction (corr 0.55 vs 0.95 at 120 ms).
 Measured (16 kHz, 60 ms room, 0.5 s chunks), echo removed after 3 / 9 / 24 s:
 speech-like 14 / 22 / 28 dB, AM 220 Hz tone 26 / 29 / 38 dB, white noise 25 / 64 / 103 dB.
 Output lags the input by exactly one block (16 ms at 16 kHz), without gaps.
-Not wired into the app yet: the live microphone still uses the GStreamer path.
+The player uses it when the WebRTC plugins are missing (player/linear_echo.py).
 """
 
 from __future__ import annotations
@@ -120,6 +120,10 @@ class LinearEchoCanceller:
         """Any length in, same length out, delayed by exactly one block (16 ms at 16 kHz)."""
         near = np.asarray(near, np.float32)
         far = np.asarray(far, np.float32)
+        if len(near) != len(far):
+            # Unequal lengths would shift the reference against the microphone from here on,
+            # and the filter would quietly stop cancelling.
+            raise ValueError(f"near and far must have the same length ({len(near)} != {len(far)})")
         self._mic = np.concatenate([self._mic, near])
         self._far = np.concatenate([self._far, far])
         out = []
@@ -131,3 +135,34 @@ class LinearEchoCanceller:
         assert len(self._pending) >= len(near), "pending must cover the request (one-block lead)"
         result, self._pending = self._pending[:len(near)], self._pending[len(near):]
         return result
+
+
+def estimate_delay(mic: np.ndarray, far: np.ndarray, decimate: int = 1) -> tuple[int, float] | None:
+    """Bulk echo delay: how many samples ``mic`` lags the playback in ``far`` (GCC-PHAT).
+
+    ``far`` covers the same time as ``mic`` plus ``len(far) - len(mic)`` samples before it,
+    so lags from 0 to that many samples are searched: ``mic[i] ~ far[len(far) - len(mic) + i - lag]``.
+    Returns ``(lag, confidence)``; confidence is the correlation peak over the mean of its
+    absolute values (about 6 for unrelated signals, tens for a clear echo). None when either
+    signal is silent. ``decimate`` averages that many samples first (48 kHz -> 16 kHz with 3);
+    the lag is returned at the input rate, to the nearest ``decimate`` samples.
+    """
+    mic = np.asarray(mic, np.float64)
+    far = np.asarray(far, np.float64)
+    search = len(far) - len(mic)
+    if search < 0:
+        raise ValueError("far must start before mic and cover it")
+    if decimate > 1:
+        mic = mic[:len(mic) // decimate * decimate].reshape(-1, decimate).mean(axis=1)
+        far = far[len(far) % decimate:].reshape(-1, decimate).mean(axis=1)
+        search = len(far) - len(mic)
+    if not mic.any() or not far.any() or not mic.std() or not far.std():
+        return None
+    n = 1 << (len(far) + len(mic)).bit_length()
+    cross = np.conj(np.fft.rfft(mic - mic.mean(), n)) * np.fft.rfft(far - far.mean(), n)
+    cross /= np.abs(cross) + 1e-12 * np.abs(cross).max()
+    r = np.fft.irfft(cross, n)[:search + 1]          # r[t] = sum mic[j] far[j + t]
+    c = r[::-1]                                         # c[lag] = r[search - lag]
+    lag = int(np.argmax(c))
+    confidence = float(c[lag] / (np.mean(np.abs(c)) + 1e-12))
+    return lag * decimate, confidence

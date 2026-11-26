@@ -69,6 +69,10 @@ class LiveMicrophone:
         self._statuses.clear()
         self._run = None
 
+    @property
+    def echo_delay_ms(self) -> int:
+        return getattr(self.player, "echo_delay_ms", 0) if self.player is not None else 0
+
     def camera_recording_enabled(self) -> bool:
         sensors = self.session.view.sensors
         camera = sensors.get("camera")
@@ -165,7 +169,10 @@ class LiveMicrophone:
                     self._statuses.appendleft((count - take, state))
             # A chunk spanning a reset must never advertise fully active AEC.
             chunk_aec = next(iter(states)) if len(states) == 1 else "uncancelled"
-            if connected and self.session.send_audio(chunk, capture_ms, aec=chunk_aec):
+            # The canceller's output is behind its input (16 ms for the linear one), so the
+            # analysed audio was captured that much before the raw audio's timestamp.
+            stamp = capture_ms - (self.echo_delay_ms if chunk_aec in ("active", "warming_up") else 0)
+            if connected and self.session.send_audio(chunk, stamp, aec=chunk_aec):
                 sent += 1
         self.sent += sent
         return sent
