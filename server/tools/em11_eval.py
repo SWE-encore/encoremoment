@@ -22,8 +22,8 @@ it: 0.5 s audio chunks, microphone generation 1, camera off. Everything after th
 production code: admission, 0.975 s windows every 0.48 s, the model and the detector. Two
 server set-ups are scored, because laughter goes through different rules in each:
 
-- ``audio-only``: no face model, ``DetectorConfig`` levels (``detector-v2``: laughter .25, scream .4,
-  gasp .3; ``--detector detector-v1`` runs laughter .4);
+- ``audio-only``: no face model, ``DetectorConfig`` levels (``detector-v3``: laughter .25, scream .2,
+  gasp .3; ``--detector detector-v1`` or ``detector-v2`` runs the earlier levels);
 - ``face-server``: started with a face model (the demo set-up), camera off: laughter opens on
   sound alone at ``TabRules.strong_audio`` (.25). Scream and gasp are the same in both.
 
@@ -88,10 +88,12 @@ GROUPS = {
     "shout_yell": ({"Shout", "Yell"}, REACTION_LABELS | {"Music"}, None),
     "breath_cough": ({"Breathing", "Cough", "Sigh", "Sneeze"}, REACTION_LABELS | {"Music"}, None),
 }
-# What ``run --detector`` measures: the server's current settings, or the ones PR #50 measured.
+# What ``run --detector`` measures: the server's current settings, or earlier ones
+# (detector-v1: what PR #50 measured; detector-v2: PR #51).
 DETECTORS = {
     "current": DetectorConfig(),
     "detector-v1": DetectorConfig(name="detector-v1", trigger={"laughter": 0.4, "scream": 0.4, "gasp": 0.3}),
+    "detector-v2": DetectorConfig(name="detector-v2", trigger={"laughter": 0.25, "scream": 0.4, "gasp": 0.3}),
 }
 # Freesound ids of the ESC-50 clips EM-26 already ran (docs/em-26-trigger-check.md): kept out.
 SEEN_IDS = {"104089", "1791", "187207", "19111", "30039", "30043", "33658", "36164"}
@@ -554,7 +556,7 @@ def main(argv=None) -> int:
     r.add_argument("--cache", type=Path, required=True)
     r.add_argument("--json", type=Path, help="write every row here")
     r.add_argument("--detector", choices=sorted(DETECTORS), default="current",
-                   help="detector-v1 re-runs the settings PR #50 measured")
+                   help="detector-v1 / detector-v2 re-run the settings PR #50 / PR #51 measured")
     t = sub.add_parser("tune", help="scan rules and levels on fetched dev clips")
     t.add_argument("--cache", type=Path, required=True)
     t.add_argument("--json", type=Path, help="write the whole scan here")

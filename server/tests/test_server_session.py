@@ -123,7 +123,7 @@ def test_loud_audio_opens_and_finishes_an_event():
     assert final["revision"] == len(evs)
     assert final["reaction"]["type"] == "laughter"
     assert final["generations"] == {"microphone": 1, "camera": None}
-    assert final["source"] == {"model": "loudness-standin", "config": "detector-v2", "aec": "off"}
+    assert final["source"] == {"model": "loudness-standin", "config": "detector-v3", "aec": "off"}
     assert final["playback"] == {"status": "pending"}  # no anchor yet: never guessed
     assert 3_000 - 1_000 <= final["capture"]["start_ms"] <= 3_000
     assert final["capture"]["end_ms"] >= 5_000

@@ -1,6 +1,6 @@
 # EM-11: reaction recognition on labeled clips it was never tuned on (R2)
 
-Dates: 2026-11-25 (sections 1–4, `detector-v1`) and 2026-11-26 (section 5, tuning and `detector-v2`). Machine: laptop, AMD Ryzen 7 8845HS, Ubuntu 24.04.3, CPU only. Server code: `main` at 31f40ef. Section 5 changes one level in `server/encore_server/detector.py`.
+Dates: 2026-11-25 (sections 1–4, `detector-v1`) and 2026-11-26 (section 5, tuning and `detector-v2`; section 6, `detector-v3`). Machine: laptop, AMD Ryzen 7 8845HS, Ubuntu 24.04.3, CPU only. Server code: `main` at 31f40ef. Sections 5 and 6 each change one level in `server/encore_server/detector.py`.
 
 R2's check case (`documents/submission-b/sections/specifications.tex`) asks for labeled laughter, scream, gasp, speech, soundtrack-only and mixed recordings, with per-class errors and the measured detection delay. It also says thresholds are calibrated on development recordings and evaluated on separate ones. Sections 1–4 are that separate evaluation, run with the thresholds as they were (`detector-v1`). Section 5 chooses new levels on FSD50K's development split and measures them once on the same evaluation clips. Nothing was tuned on the evaluation clips.
 
@@ -8,6 +8,8 @@ R2's check case (`documents/submission-b/sections/specifications.tex`) asks for 
 - With `detector-v1`, YAMNet finds about a third of the laughter clips, about half of the screams and half of the gasps. It rarely fires on speech or music, but it opens a gasp on 15 of 40 breathing, sigh and sneeze clips. A found reaction opens 0.7–2.5 s after the sound starts (medians).
 - Tuning on development clips lowers the laughter level from .4 to .25 (`detector-v2`). On the evaluation clips it finds 13 of 40 laughs instead of 11 and opens sooner (median 1.43 s instead of 2.50 s). It adds two false laughter events on the 160 clean clips with no reaction.
 - A rule to stop breathing from opening gasp did not work on development data, so gasp is unchanged.
+- The team then lowered scream from .4 to .2 (`detector-v3`), the level the development clips pointed to. On the evaluation clips it finds 26 of 40 screams instead of 18. It also opens scream on 2 of 40 speech clips and 5 of 40 shouts.
+- Section 8 sets the accuracy target and records the team's decisions on gasp, the model and the evidence.
 
 ## 1. Data
 
@@ -36,7 +38,7 @@ The labels are per clip, not per moment. A "laughter" clip can also hold speech 
 
 - **Model:** YAMNet `google/yamnet/1` from the TF-Hub cache (weights `sha256:c59c5744e1b92942`, the name events now carry), with TensorFlow 2.18.1, tensorflow-hub 0.16.1 and numpy 1.26.4. Each reaction is the highest score among its YAMNet classes (`server/encore_server/models.py`): laughter is Laughter, Baby laughter, Giggle, Snicker, Belly laugh and Chuckle/chortle; scream is Screaming; gasp is Gasp.
 - **Two server set-ups:**
-  - **audio-only:** no face model; `DetectorConfig` `detector-v1` opens at laughter .4, scream .4, gasp .3. `detector-v2` (section 5) changes laughter to .25.
+  - **audio-only:** no face model; `DetectorConfig` `detector-v1` opens at laughter .4, scream .4, gasp .3. `detector-v2` (section 5) changes laughter to .25, and `detector-v3` (section 6) changes scream to .2.
   - **face-server:** started with a face model, as in the demo, with the camera off. Laughter then opens on sound alone at `TabRules.strong_audio` .25. Scream and gasp are the same as audio-only.
 - **Conditions:**
   - **clean:** 2 s of silence, the clip, then 3 s of silence.
@@ -167,7 +169,7 @@ The plan was a gasp rule: a window counts as a gasp only if its gasp score is at
 
 ### Scream: not changed here
 
-Development clips point to .2. At that level 49 of 60 screams are found (82%, 70–89%), against 39 (65%, 52–76%) at .4. At .2, scream opens on 5 shout/yell clips (8%), 4 laughter clips and 4 gasp clips, and never on speech or music. This PR does not change scream; .2 is a candidate for the team.
+Development clips point to .2. At that level 49 of 60 screams are found (82%, 70–89%), against 39 (65%, 52–76%) at .4. At .2, scream opens on 5 shout/yell clips (8%), 4 laughter clips and 4 gasp clips, and never on speech or music. PR #51 did not change scream; .2 was left as a candidate for the team, which adopted it on 2026-11-26 (section 6).
 
 ### detector-v2 on the evaluation clips (measured once)
 
@@ -187,40 +189,75 @@ The run used the same 280 clips and 1 520 runs as section 3. Only the audio-only
 - Most of the delay gain comes from the two new clips, which open quickly. On the 11 clips both versions find, the median goes from 2.50 s to 2.22 s, and 5 of them open 0.5–1.5 s sooner.
 - The gain is smaller than development data suggested: from 40% to 52% on dev, but only from 28% to 32% on eval. Most missed evaluation laughs stay below .1 (section 4), and no level helps there without opening on screams and gasps.
 
-## 6. What this means
+## 6. detector-v3: scream .2 (team decision, measured once)
+
+On 2026-11-26 the team adopted the scream level the development clips pointed to (section 5): .2 instead of .4. `detector-v3` is `detector-v2` with that one change. It was measured once on the same 280 evaluation clips and 1 520 runs. Laughter and gasp results are identical to `detector-v2`, and so are the face-server results for scream, because scream never used the face.
+
+| Audio-only | detector-v2 (scream .4) | detector-v3 (scream .2) |
+|---|---|---|
+| Screams found, clean | 18/40 (45%, 31–60%) | 26/40 (65%, 50–78%) |
+| Delay median / p90 | 0.90 / 1.35 s | 0.78 / 1.49 s |
+| Screams found over speech, +10 / 0 dB | 8 / 1 of 40 | 15 / 8 of 40 |
+| Screams found over music, +10 / 0 dB | 5 / 5 of 40 | 13 / 8 of 40 |
+| Scream opened on clean clips of: | | |
+| — speech | 0/40 | 2/40 (peaks .213 and .235) |
+| — shout or yell | 3/40 | 5/40 |
+| — gasp | 1/40 | 6/40 |
+| — laughter, music, breathing | 0 | 0 |
+| Events while only the playback sounded (2 400 s, all reactions) | 5 | 7 |
+
+- Scream is now the best-found reaction on clean clips. Over speech at 0 dB, `detector-v2` found 1 scream of 40 and `detector-v3` finds 8.
+- The cost is scream opening on other loud voices: a few more shouts and gasps, and, unlike on the development clips, 2 speech clips. Both peak just above .2.
+- Clean speech now gives 4 events in 290 s of speech (0.8 per minute; `detector-v2`: 2), and clean music 1 in 234 s. Playback alone gives 7 in 2 400 s (0.2 per minute).
+
+## 7. What this means
 
 - **R2's evaluation now exists, and it is weak.** About a third of laughter clips are found. Laughter is the class the product depends on most.
 - **detector-v2 helps a little.** Lowering laughter to .25 finds a few more laughs and opens them sooner, for a few more false laughter events. It does not change the picture: about a third of evaluation laughs are found.
 - **Single, clear laughter works.** 10–11 of 19 such clips are found, and found clips peak far above the threshold. Crowd laughter, laughter inside speech and short chuckles are mostly missed, because YAMNet calls them speech. A living room with a few viewers is closer to the clear-laughter case than to a crowd, but no audience recording has been checked.
 - **False alarms are rare for speech and music.** Speech and music sounding alone opened 0–2 events in 400 s of playback per condition. The one exception is gasp on breathing and sneezes. A viewer breathing heavily near the microphone could open gasp events, and with YAMNet no rule fixes that (section 5).
-- **Playback hurts recall.** At 0 dB, screams over speech are almost never found (1 of 40). The echo canceller's job (R1) matters for R2 too.
+- **Playback hurts recall.** At 0 dB, `detector-v1` and `detector-v2` almost never found screams over speech (1 of 40); `detector-v3` finds 8. Laughter and gasp over playback at 0 dB stay at 8–28%. The echo canceller's job (R1) matters for R2 too.
 - **The delay is mostly the window.**
   - A reaction is scored in a 0.975 s window whose trigger is its centre, and the PC sends 0.5 s chunks.
-  - Scream and gasp open 0.7–0.9 s after onset (medians).
+  - Scream and gasp open 0.7–0.8 s after onset (medians, `detector-v3`).
   - Laughter needs a window above .25 and takes about 1.4 s (`detector-v1`: .4 and 2.5 s).
 
-Possible next steps. Each needs a team decision. Tune on development data (`em11_eval.py tune`), never on the evaluation clips.
+## 8. Accuracy target and team decisions (2026-11-26)
 
-1. **Gasp:** a rule against breathing was tried and failed (section 5). Keeping gasp means a model that separates gasps from breathing, or accepting false gasps from heavy breathing.
-2. **Scream level:** .2 instead of .4, as development data suggests (section 5).
-3. **Another model:** the spec still names PANNs (32 kHz), or YAMNet could be fine-tuned on laughter that is mixed with speech.
-4. **Audience recordings:** recordings made in front of the app would replace the uploaded clips.
+**Accuracy target.** EM-11's first criterion leaves the target to be set after the evaluation. The team set it at the level the demo meets today, measured audio-only on the clean evaluation clips. It is a floor that a later change must not fall below. It is not a claim that recognition is good: **laughter recall is weak**, about a third of the laughs. Crowd laughter, laughter inside speech and short chuckles are mostly missed (section 4), and EM-26's live run missed one soft chuckle as well.
 
-## 7. EM-11 acceptance criteria
+| Target | detector-v3 | Met |
+|---|---|---|
+| Laughter found ≥ 30% | 13/40 (32%, 20–48%) | yes, barely |
+| Scream found ≥ 45% | 26/40 (65%, 50–78%) | yes |
+| Gasp found ≥ 50% | 20/40 (50%, 35–65%) | yes, at the line |
+| ≤ 1 false event per minute of speech or music | clean speech 0.8, clean music 0.3, playback alone 0.2 per minute | yes |
+| Median delay ≤ 1.5 s | laughter 1.43 s, scream 0.78 s, gasp 0.70 s | yes |
+
+The confidence intervals are wide: 40 clips per class cannot tell 32% from 45%. Tune any later change on development clips (`em11_eval.py tune`), never on these evaluation clips.
+
+**Decisions:**
+
+1. **Scream level .2** (`detector-v3`, section 6).
+2. **Gasp stays at .3, with a known limit.** YAMNet scores heavy breathing, sighs and sneezes like gasps (15 of 40 breathing and cough clips open gasp), and the rule tried in section 5 did not separate them. A viewer breathing hard near the microphone can open a gasp event.
+3. **The model stays YAMNet.** The submission's environment and specification sections name PANNs `Cnn14_DecisionLevelMax` at 32 kHz on a GPU worker, while the introduction allows YAMNet or PANNs. YAMNet runs on the CPU in a few milliseconds per window (medians of 4–8 ms in these runs), its weights are versioned in every event (`source.model`), and the whole pipeline, evaluation and EM-26's checks are built on it. Switching before the Dec 3 deadline would need PyTorch, a GPU worker and a new evaluation. The final report states this change from the specification.
+4. **R2's evidence** is this evaluation and EM-26's live runs (`docs/em-26-trigger-check.md`, sections 6–7). No recordings of a real audience were made, and that is a known limit: the clips are uploaded sounds, not viewers in a living room with a microphone and an echo canceller.
+
+## 9. EM-11 acceptance criteria
 
 | Criterion | Status |
 |---|---|
-| Three reaction types from a versioned model, window and thresholds | Built. Each event carries `source.model` with the weights' SHA-256 prefix (`google/yamnet/1@sha256:c59c5744e1b92942`, PR #52) and `source.config` (`detector-v2`, or the fusion string). The window and hop are fixed in `audio.py`. |
+| Three reaction types from a versioned model, window and thresholds | Built. Each event carries `source.model` with the weights' SHA-256 prefix (`google/yamnet/1@sha256:c59c5744e1b92942`, PR #52) and `source.config` (`detector-v3`, or the fusion string). The window and hop are fixed in `audio.py`. |
 | Camera off or no face: audio only; one strong face counts, several weak faces do not add up | Camera off: this evaluation, and EM-26's scripted cases (PR #45). No face found: EM-26's `no-face-*` cases. Several faces: the face worker scores up to 4 faces and keeps the largest smile (`vision.py`, `max(smiles)`), so one strong face counts and weak faces never add up; no test feeds it several real faces. EM-26's cases were not rerun here. |
-| Per-class errors and detection delay on separate evaluation input | This document: levels chosen on development clips (section 5), errors and delay on separate evaluation clips. The accuracy target is still to be set. |
+| Per-class errors and detection delay on separate evaluation input | This document: levels chosen on development clips (section 5) or by the team (section 6), errors and delay on separate evaluation clips (sections 3 and 6). The accuracy target is set in section 8, and `detector-v3` meets it. |
 
-## 8. Reproduce
+## 10. Reproduce
 
 ```sh
 # labels: FSD50K.ground_truth.zip from https://zenodo.org/records/4060432, unzipped into CACHE/labels/
 python server/tools/em11_eval.py fetch --cache ~/.cache/encore/fsd50k-eval   # 280 clips, ~147 MB
 TFHUB_CACHE_DIR=~/.cache/encore/tfhub python server/tools/em11_eval.py run \
-    --cache ~/.cache/encore/fsd50k-eval --json results.json      # --detector detector-v1 for section 3
+    --cache ~/.cache/encore/fsd50k-eval --json results.json      # --detector detector-v1 / detector-v2 for sections 3 / 5
 
 # section 5: development clips, then the scan
 python server/tools/em11_eval.py fetch --split dev --per-group 60 --cache ~/.cache/encore/fsd50k-dev \

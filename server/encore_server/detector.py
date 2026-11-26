@@ -34,10 +34,11 @@ REACTIONS = ("laughter", "scream", "gasp")
 @dataclass
 class DetectorConfig:
     # v2 (EM-11): laughter .4 -> .25, chosen on FSD50K dev clips (docs/em-11-evaluation.md).
-    # Scream and gasp keep their v1 levels.
-    name: str = "detector-v2"
+    # v3 (EM-11): scream .4 -> .2, the level those dev clips pointed to; a team decision.
+    # Gasp keeps its v1 level: YAMNet cannot tell a gasp from heavy breathing.
+    name: str = "detector-v3"
     trigger: dict[str, float] = field(
-        default_factory=lambda: {"laughter": 0.25, "scream": 0.4, "gasp": 0.3}
+        default_factory=lambda: {"laughter": 0.25, "scream": 0.2, "gasp": 0.3}
     )
     release_ratio: float = 0.6
     refire_ms: int = 2_000
