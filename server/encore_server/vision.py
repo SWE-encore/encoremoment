@@ -20,7 +20,13 @@ def unpack_pair(packet):
 
 class FaceWorker:
     """One persistent process using the existing MediaPipe virtual environment."""
+    name = "mediapipe-face"
+
     def __init__(self, python, model):
+        from .models import sha256_file, tagged
+
+        self.sha256 = sha256_file(model)
+        self.name = tagged(type(self).name, self.sha256)  # in source.model of face-assisted events
         self.lock = threading.Lock()
         self.process = subprocess.Popen(
             [python, "-u", str(Path(__file__).with_name("vision.py")), model],

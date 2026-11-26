@@ -85,6 +85,12 @@ To run the database integration test, point `ENCORE_TEST_DATABASE_URL` at a dedi
 
 Every event carries `source.model`, `source.config` (including the window and thresholds for fused laughter) and the `aec` status of the audio it came from, so results from different models or settings can be told apart.
 
+`source.model` also names the exact weights. A model loaded from files ends in its SHA-256, shortened to 16 hex digits: `google/yamnet/1@sha256:c59c5744e1b92942` for the TF-Hub YAMNet, and `+mediapipe-face@sha256:…` on face-assisted laughter. At startup the server logs the full digests. To check one by hand, run this inside the SavedModel directory (for the face task, run `sha256sum face_landmarker.task`):
+
+```sh
+find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum
+```
+
 ## Not done yet
 
 - **Tuning on real audience audio.** The laughter level was chosen on FSD50K development clips and measured on separate FSD50K evaluation clips ([EM-11](../docs/em-11-evaluation.md)). Scream and gasp are still starting values. None has been checked on recorded laughter, screams or gasps in a living room with the content playing. This needs the team's test recordings, ideally with AEC on (EM-10).

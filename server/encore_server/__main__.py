@@ -101,11 +101,12 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError as exc:
         ap.exit(2, f"cannot load {args.model}: {exc}\n"
                    "Install server/requirements-yamnet.txt, or use --model loudness to test without TensorFlow.\n")
-    say(f"loaded {model.name}")
+    say(f"loaded {model.name}" + (f", sha256 {model.sha256}" if getattr(model, "sha256", None) else ""))
     from .vision import FaceWorker
     face = FaceWorker(args.face_python, args.face_task) if args.face_task else None
     try:
         if face is not None:
+            say(f"loaded {face.name}, sha256 {face.sha256}")
             say(f"rolling fusion: laughter >= {TabRules.strong_audio} or laughter >= {TabRules.assisted_audio} "
                 f"with smile >= {args.smile_threshold:g} for {TabRules.equivalent_hops} equivalent hops in 5 s; quiet {args.demo_quiet_ms} ms")
         app = EncoreServer(model, say=say, face_model=face, history=history,
