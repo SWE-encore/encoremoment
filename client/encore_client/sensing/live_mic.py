@@ -19,6 +19,7 @@ CHUNK_MS = 500
 RESYNC_MS = 250  # timestamps this far from the clock: samples were lost, start a new run
 SETTLE_MS = 150  # a device's first samples can be a full-scale pop (measured: ~25 ms on a laptop microphone)
 MAX_RECORDING_S = 600
+MUTED_AFTER_MS = 1_500  # a real room is never exactly zero for this long
 
 
 class LiveMicrophone:
@@ -60,8 +61,16 @@ class LiveMicrophone:
         self.zero_ms = 0
 
     def device_started(self, settle_ms: int = SETTLE_MS) -> None:
-        """The device just opened: discard its first ``settle_ms`` of audio."""
+        """The device just opened: discard its first ``settle_ms`` of audio. Zeros
+        counted before it was closed say nothing about the device now."""
         self._skip = AUDIO_RATE * settle_ms // 1000 * 2
+        self.zero_ms = 0
+
+    @property
+    def muted(self) -> bool:
+        """The device has delivered only exact zeros for ``MUTED_AFTER_MS``: its input
+        is muted (system settings or a hardware switch), not a quiet room."""
+        return self.zero_ms >= MUTED_AFTER_MS
 
     def _reset_run(self):
         self._buf.clear()

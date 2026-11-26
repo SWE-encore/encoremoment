@@ -86,11 +86,22 @@ def test_the_first_samples_after_the_device_starts_are_discarded():
 def test_exact_zeros_from_the_device_are_counted_as_a_muted_input():
     session, clock = FakeSession(), Clock(0)
     mic = LiveMicrophone(session, clock=clock)
-    feed(mic, clock, 20)  # 2 s of exact zeros
-    assert mic.zero_ms == 2_000
+    feed(mic, clock, 14)
+    assert mic.zero_ms == 1_400 and not mic.muted
+    feed(mic, clock, 6)  # 2 s of exact zeros
+    assert mic.zero_ms == 2_000 and mic.muted
     clock.t += 100
     mic.feed(b"\x01\x00" + bytes(3_198))  # any real sound, however quiet
-    assert mic.zero_ms == 0
+    assert mic.zero_ms == 0 and not mic.muted
+
+
+def test_a_device_opened_again_does_not_keep_the_zeros_of_its_last_run():
+    session, clock = FakeSession(), Clock(0)
+    mic = LiveMicrophone(session, clock=clock)
+    feed(mic, clock, 20)
+    assert mic.muted
+    mic.device_started()  # the microphone was turned off and on again
+    assert mic.zero_ms == 0 and not mic.muted
 
 
 def test_qt_input_opens_the_default_device_in_the_contract_format():
