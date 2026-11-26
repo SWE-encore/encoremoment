@@ -106,3 +106,41 @@ def test_playback_alone_is_counted_apart_from_the_reaction():
     assert len(mixed) == 1 and mixed[0]["outside"] == ["laughter"] and mixed[0]["hit"] is False
     table = em11.report(rows)
     assert "| laughter | speech | +0 dB |" in table and "| speech | 1 |" in table
+
+
+def _windows(labels, **scores):
+    """One window per value: ``Gasp=[.5, .5]`` gives two windows with that Gasp score."""
+    n = max(len(v) for v in scores.values())
+    w = np.zeros((n, len(labels)), np.float32)
+    for name, values in scores.items():
+        w[: len(values), labels.index(name)] = values
+    return w
+
+
+def test_tuning_keeps_every_other_group_under_the_limit_and_prefers_the_simplest_rule():
+    from encore_server.models import YAMNET_CLASSES
+
+    labels = sorted({n for names in YAMNET_CLASSES.values() for n in names}
+                    | {n for names in em11.RIVAL_SETS.values() for n in names})
+    windows, groups = {}, {"gasp": [], "breath_cough": [], "laughter": [], "speech": []}
+    for i in range(10):
+        windows[f"g{i}"] = _windows(labels, Gasp=[.5], Breathing=[.3])      # a gasp: breathing too
+        windows[f"b{i}"] = _windows(labels, Gasp=[.1, .5], Breathing=[.2, .8])  # breathing scored as gasp
+        windows[f"l{i}"] = _windows(labels, Laughter=[.3])
+        windows[f"s{i}"] = _windows(labels, Laughter=[.2 if i < 2 else 0])   # 2 of 10 speech clips
+        for group, key in (("gasp", "g"), ("breath_cough", "b"), ("laughter", "l"), ("speech", "s")):
+            groups[group].append(f"{key}{i}")
+
+    rules = [("none", 1.0)] + [(name, r) for name in em11.RIVAL_SETS if name != "none" for r in em11.RIVAL_RATIOS]
+    gasp = em11.scan(windows, groups, labels, "gasp", rules)
+    plain = [r for r in gasp if r["rivals"] == "none" and r["level"] == .3][0]
+    assert plain["found"] == 10 and plain["opened"]["breath_cough"] == 10 and not plain["allowed"]
+    chosen = em11.choose(gasp)
+    # Gasp must at least match breathing: every gasp kept, no breathing clip opens. Larger
+    # ratios and rival sets do as well, so the first rule and the highest level win the tie.
+    assert (chosen["rivals"], chosen["ratio"], chosen["level"], chosen["found"]) == ("Breathing", 1.0, .5, 10)
+    assert chosen["opened"]["breath_cough"] == 0
+
+    laughter = em11.choose(em11.scan(windows, groups, labels, "laughter", [("none", 1.0)]))
+    # .2 would open on 20 % of speech clips; .25 and .3 find every laugh, and .3 is higher.
+    assert (laughter["level"], laughter["found"], laughter["opened"]["speech"]) == (.3, 10, 0)
