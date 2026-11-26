@@ -38,6 +38,7 @@ class Workspace(QWidget):
         self.deletions = DeletionManager(index_path)
         self.recorder = None
         self.live_microphone = None
+        self.echo = None   # EchoControl (R12), under the microphone control
         self._camera_device = camera_device
         self._recorder_factory = recorder_factory
         if recorder_factory is not None:
@@ -109,6 +110,16 @@ class Workspace(QWidget):
         layout = self.layout()
         layout.insertWidget(layout.indexOf(self.sensing) + 1, self.microphone)
 
+    def add_echo_control(self, mode):
+        """Show the echo cancellation switch and its requested/effective mode (R12).
+        It replaces the plain status line and follows each new session."""
+        from .echo import EchoControl
+        self.echo = EchoControl(mode)
+        self.session_users.append(mode)
+        layout = self.layout()
+        layout.insertWidget(layout.indexOf(self.aec_label), self.echo)
+        self.aec_label.hide()
+
     def feed_audio(self, pcm, capture_ms):
         """Microphone PCM for the current session's camera recording (``on_pcm``)."""
         if self.recorder is not None:
@@ -177,7 +188,9 @@ class Workspace(QWidget):
         self.camera_panel.refresh()
         if self.microphone is not None:
             self.microphone.refresh()
-        if self.live_microphone is not None:
+        if self.echo is not None:
+            self.echo.refresh()
+        elif self.live_microphone is not None:
             self.aec_label.setText(f"Echo cancellation: {self.live_microphone.aec_status}")
             self.aec_label.setVisible(True)
         self.deletions.tick()

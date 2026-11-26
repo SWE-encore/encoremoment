@@ -232,6 +232,8 @@ def main(argv=None):
                     + (" Times are seconds since Start." if mic_clock else ""))
                 workspace.sensing.setWordWrap(True)
                 workspace.add_microphone(MicrophoneSwitch(session, qt_mic, source=qt_mic.device.description()))
+                from .sensing.aec_mode import AecMode
+                workspace.add_echo_control(AecMode(session, source))
         app.aboutToQuit.connect(workspace.shutdown)
         win.show()
         return app.exec()
