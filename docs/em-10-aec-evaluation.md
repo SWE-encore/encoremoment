@@ -74,7 +74,27 @@ No processor made the echo alone trigger laughter (0 false windows everywhere).
 - The room is a linear synthetic response; real speakers add non-linear distortion a linear filter cannot remove. Next: a real room recording (EM-10 acceptance case 2).
 - Playback was speech only; music and effects are untested with YAMNet.
 - With no echo the canceller still loses some windows (56 vs the 61 of a pure shift): the background is sometimes copied during a laugh. A stricter copy rule is the next tuning step.
-- The canceller is not wired into the app; the live microphone still uses the GStreamer path. Wiring it in, and letting the user switch it (R12, EM-21), come next.
+- Wired in as the player's fallback when `webrtcdsp`/`webrtcechoprobe` are missing (section 8). Letting the user switch it (R12, EM-21) comes next.
+
+## 8. In the app: the player's fallback
+
+`player/pipeline.py` keeps the WebRTC filter when both plugins exist. Otherwise (`echo_reference == "linear"`, as on Ubuntu 24.04 and macOS) a buffer probe on the volume's output copies each buffer (mixed to mono S16, 48 kHz) just before the audio sink plays it, the way `webrtcechoprobe` would. `player/linear_echo.py` keeps those samples by running time (`ReferenceBuffer`, 3 s) and feeds them with each 10 ms microphone block to the linear canceller (768-sample blocks, 256 ms tail). Status follows the WebRTC filter: `warming_up` for 500 ms, then `active`; `reference_unavailable` when the reference does not cover the block, after a seek, while paused, or at speeds other than 1x.
+
+**A whole microphone read is checked by its newest sample.** `live_mic.py` passes each read to `cancel_echo` in one call, stamped with its first sample, and Qt's PulseAudio source on Linux reads 500 ms at a time. The player taps audio about 160–200 ms before it is heard (pulsesink, 200 ms buffer), so the first sample of such a read was 640–710 ms older than the newest tapped audio. The check that rejects stale blocks (more than 500 ms) used that first sample, so in the app every read came back `reference_unavailable` and the canceller never ran. In linear mode the check now uses the read's last sample; `ReferenceBuffer` keeps 3 s, and `LinearEchoPath` still reports `reference_unavailable` if any sample is missing. `test_500_ms_microphone_reads_are_cancelled_too` plays the same scene in 500 ms reads (18.7 dB, as with 10 ms).
+
+**The reference is read from a cursor, not looked up per block.** The microphone's timestamps are whole milliseconds and the capture callback jitters, and 1 ms is 48 samples. Looking up each block's reference by its own timestamp made the echo path seem to jump by a few samples every 10 ms; with ±3 ms jitter the canceller removed nothing (0.0 dB, `test_reading_the_reference_by_each_timestamp_would_have_failed`). `LinearEchoPath` therefore places only the first block by its timestamp and then advances by exactly the samples consumed: 43.8 dB with the same jitter, the same as with exact timestamps. A timestamp more than 20 ms from the cursor (a dropped block, clock drift) moves the cursor and restarts the filter. The cursor sits 5 ms before the timestamp, which the filter sees as 5 ms more echo delay; a slightly late timestamp then neither asks for audio not played yet nor puts the echo ahead of its reference.
+
+The first version of this wiring (PR #47, c699ea6) looked up each block by timestamp, and its playback test cut every simulated microphone block at whatever the position happened to be. Both made the echo path move every block. The test now cuts back-to-back blocks from one simulated recording, as a real microphone delivers them.
+
+The tap itself took two more CI runs. First it was a `tee` to a synced `appsink` behind a 200 ms leaky queue: the filter never left `warming_up`, because the sink branch's own queue lets upstream decode about 1 s ahead, so the leaky queue kept dropping audio before its time came. Then the `appsink` was unsynced: the reference arrived, but the pipeline now had a second sink running about 1 s ahead. Its position became the player's position, so the test's simulated echo was a second off the reference (0.0 dB) and two `test_player_pipeline.py` tests failed (pause did not settle; replay after the end reported 1006 ms instead of near 0). The probe needs no second sink, so the pipeline is the same as before PR #47 apart from the probe.
+
+**The echo's bulk delay is measured and aligned.** The tap sits before the audio sink's buffer, so the echo reaches the microphone 160–200 ms (pulsesink) plus the room and the input latency after its reference, close to or past the filter's 256 ms tail. Every second `LinearEchoPath` correlates the last 1 s of microphone audio with the reference up to 750 ms earlier (GCC-PHAT at 16 kHz, `estimate_delay` in `linear_aec.py`). Two confident estimates in a row (peak at least 9 times the mean correlation; unrelated audio gives about 5) that put the direct echo outside 2–150 ms move the reference so it lands at 30 ms, and the filter starts again. With a 300 ms echo this gives 43.6 dB where the unaligned filter removes nothing (`test_an_echo_beyond_the_tail_is_found_and_cancelled`). The delay is kept across seeks. Audio with no measurable echo (headphones, silence, an echo too weak to matter) never moves it. An echo that would need more than 700 ms of alignment cannot be reached with the 3 s reference history: those blocks pass through unfiltered and are reported as `uncancelled`, not `active` (`test_an_echo_too_late_to_reach_is_reported_uncancelled`).
+
+**Timestamps.** The cleaned audio is 16 ms (one block) behind the raw audio. `live_mic.py` stamps an `active` or `warming_up` chunk 16 ms earlier (`PlayerPipeline.echo_delay_ms`), so the server's windows refer to when the audio was captured; the local raw track keeps the device time. A switch between cancelled and passed-through audio moves the stamp by 16 ms, below the server's 50 ms discontinuity rule.
+
+**Clock assumption.** The canceller assumes the speakers and the microphone run on the same clock: the built-in speaker and microphone of one laptop, or one USB headset or sound card. It does not correct drift. With two devices (for example HDMI or Bluetooth speakers and the laptop microphone) the clocks can differ by up to about 0.1 ms per second. The 20 ms rule then restarts the filter every few minutes (about 3 s to regain 15 dB on the CI signal); in between the filter tracks slowly drifting echo less well (synthetic: 16 dB at 10 ppm, 8 dB at 50 ppm, PR #44 review). The demonstration should use one device for both, and the R1 acceptance record names the devices used.
+
+Tests: `client/tests/test_linear_echo.py` (reference timing, gaps, seeks, threads, warm-up, 48 kHz cancellation, jittery timestamps, the per-block lookup it replaces, re-anchoring, pass-through, bulk delay alignment and out-of-range reporting; NumPy only) and `test_echo_capture.py::LinearEchoPlaybackTest`, the WebRTC test's scene run through the real player where the plugins are missing (CI on Ubuntu).
 
 ## Reproduce (macOS)
 
@@ -86,4 +106,12 @@ PY=~/venvs/yamnet/bin/python sh client/tools/aec/make_inputs.sh
 ~/venvs/yamnet/bin/python client/tools/aec/yamnet_compare.py /tmp/aec/laugh_esc50_all.wav /tmp/aec/content.wav
 ~/venvs/yamnet/bin/python client/tools/aec/synthetic_pywebrtc.py
 python -m pytest -q client/tests/test_linear_aec.py
+```
+
+Acceptance case 2 in a real room (one laptop's own speaker and microphone, three takes: playback only, reaction only, both; writes `results.md` for EM-10):
+
+```sh
+~/venvs/yamnet/bin/pip install sounddevice
+~/venvs/yamnet/bin/python client/tools/aec/room_recording.py record /tmp/em10-room
+~/venvs/yamnet/bin/python client/tools/aec/room_recording.py analyse /tmp/em10-room
 ```

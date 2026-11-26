@@ -177,3 +177,55 @@ def test_end_while_waiting_to_reconnect_stops_the_attempts(server, relay):
     session.poll()
     assert session.state is Conn.ENDED and session.retry_in_ms is None
     assert not any(e["what"] == "reconnect" for e in session.log.entries)
+
+
+def test_a_session_whose_pc_never_returns_is_ended_after_the_lease(server, relay, tmp_path):
+    """End while offline: the server cannot hear End, so its lease closes what was open."""
+    app, _ = server
+    app.idle_s, app.lease_s = 30, 0.5  # only the lease may close the reaction here
+    session = start(app, relay, "ses-r11-lease")
+    server_session = app.sessions["ses-r11-lease"]
+    mic, clock = microphone(session, write_wav(tmp_path / "laugh.wav", [(2, 0), (2, 0.5)]))
+    clock.play(mic, 4_000)
+    wait(session, lambda: session.open_events == ["evt-0001"])
+
+    relay.down()
+    relay.cut()
+    wait(session, lambda: session.state is Conn.DISCONNECTED)
+    session.finish()  # ends at once on the PC; the server never hears it
+    assert session.state is Conn.ENDED
+    assert server_session.log[-1]["event"]["phase"] != "FINAL"
+
+    wait_for(lambda: "ses-r11-lease" not in app.sessions, "the lease to end the session")
+    phases = [(m["event"]["event_id"], m["event"]["phase"]) for m in server_session.log]
+    assert phases[-1] == ("evt-0001", "FINAL") and [p for _, p in phases].count("FINAL") == 1
+    assert "ses-r11-lease" not in app._leases and "ses-r11-lease" not in app._locks
+
+
+def test_a_reconnect_within_the_lease_keeps_the_session(server, relay):
+    app, _ = server
+    app.lease_s = 1.0
+    session = start(app, relay, "ses-r11-lease-back")
+    server_session = app.sessions["ses-r11-lease-back"]
+    relay.cut()  # the relay stays up: the PC is back after its first delay (300 ms)
+    wait(session, lambda: session.state is Conn.CONNECTED and session.reconnects == 1)
+    time.sleep(1.3)  # past the lease of the first drop
+    session.poll()
+    assert app.sessions["ses-r11-lease-back"] is server_session and not session.lost
+    assert session.state is Conn.CONNECTED and "ses-r11-lease-back" not in app._leases
+    session.end()
+
+
+def test_a_pc_back_after_the_lease_is_told_the_session_is_lost(server, relay):
+    app, _ = server
+    app.lease_s = 0.3
+    session = start(app, relay, "ses-r11-lease-late")
+    relay.down()
+    relay.cut()
+    wait(session, lambda: session.state is Conn.DISCONNECTED)
+    wait_for(lambda: "ses-r11-lease-late" not in app.sessions, "the lease to end the session")
+
+    relay.up()
+    wait(session, lambda: session.lost)
+    assert session.state is Conn.DISCONNECTED and session.reason == LOST_SESSION
+    session.end()

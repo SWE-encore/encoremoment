@@ -61,6 +61,21 @@ class RawTrackTest(unittest.TestCase):
         self.assertEqual(uploaded, [(bytes(16000), 1000, "uncancelled")])
         self.assertFalse(mic.recording)
 
+    def test_cancelled_chunks_are_stamped_back_by_the_canceller_delay(self):
+        # The linear canceller's output is one block (16 ms) behind its input. The raw track
+        # keeps the device time; the analysed chunk is stamped when its audio was captured.
+        raw, uploaded = [], []
+        session = SimpleNamespace(
+            state=Conn.CONNECTED, view=SimpleNamespace(sensors={"microphone": SimpleNamespace(enabled=True, generation=1)}),
+            send_audio=lambda chunk, stamp, aec: uploaded.append((stamp, aec)) or True,
+        )
+        mic = LiveMicrophone(session, player=SimpleNamespace(echo_delay_ms=16),
+                             on_pcm=lambda chunk, stamp: raw.append(stamp), keep_s=0)
+        mic.feed(bytes(16000), end_ms=1500, aec="active")
+        mic.feed(bytes(16000), end_ms=2000, aec="reference_unavailable")
+        self.assertEqual(raw, [1000, 1500])
+        self.assertEqual(uploaded, [(984, "active"), (1500, "reference_unavailable")])
+
     def test_jitter_and_resampler_delay_keep_capture_time_and_aec_with_pcm(self):
         # Three contiguous 10 ms device buffers are delivered at uneven intervals.
         # The 48 -> 16 kHz converter emits no output, then 15 ms, then 15 ms.
@@ -187,3 +202,124 @@ class EchoPlaybackTest(unittest.TestCase):
             self.assertIsNone(player._echo)
             player.pause()
             self.assertEqual(player.cancel_echo(bytes(960), player.clock())[1], "reference_unavailable")
+
+
+@unittest.skipUnless(PlayerPipeline and not (Gst.ElementFactory.find("webrtcdsp") and
+                                             Gst.ElementFactory.find("webrtcechoprobe")),
+                     "GStreamer without the WebRTC plugins (the linear fallback) required")
+class LinearEchoPlaybackTest(unittest.TestCase):
+    """EM-10: Ubuntu 24.04 has no WebRTC plugins, so the player taps its own audio and the
+    linear canceller removes the echo. Same synthetic scene as the WebRTC test above."""
+
+    @staticmethod
+    def _reference_lag_ms(player, far, start_ms):
+        """How far the tapped reference at ``start_ms`` (running time) sits from ``far``."""
+        import numpy as np
+
+        window = player._reference.window((start_ms - 100) * Gst.MSECOND, 4800)
+        if window is None:
+            return None
+        lo = (start_ms - 200) * 48
+        segment = far[lo:lo + 4800 + 9600].astype(float)
+        score = np.correlate(segment, window.astype(float), "valid")
+        return (int(np.argmax(score)) - 4800) / 48
+
+    def _play_scene(self, read_ms):
+        """Play the scene and send the simulated microphone in reads of ``read_ms``.
+
+        A microphone delivers one continuous stream, so the 10 ms blocks are cut back to
+        back from one simulated room recording (30 ms acoustic delay). live_mic hands each
+        read over in one call, stamped with when its first sample was captured; Qt's
+        PulseAudio source reads 500 ms at a time. Cutting each block at whatever the
+        position happens to be would make the echo path jump by a few ms per block."""
+        import numpy as np
+
+        rate = 48_000
+        far = np.random.default_rng(17).normal(0, 3800, rate * 7)
+        far = np.convolve(far, [.1, .2, .4, .2, .1], "same").astype("<i2")
+        far[rate*5:] = 0
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)            # cleanups run last-in first-out: player first
+        player = PlayerPipeline("em10-linear-test", audio_sink="fakesink sync=true")
+        self.addCleanup(player.close)
+        self.assertEqual(player.echo_reference, "linear")
+        path = Path(tmp.name) / "reference.wav"
+        with wave.open(str(path), "wb") as wav:
+            wav.setparams((1, 2, rate, 0, "NONE", ""))
+            wav.writeframes(far.tobytes())
+        player.open(path)
+        deadline = time.monotonic() + 3
+        while not player.has_audio or not player.tracker.last:
+            player.poll()
+            self.assertLess(time.monotonic(), deadline, player.error)
+            time.sleep(.003)
+        self.assertEqual(player.cancel_echo(bytes(960), player.clock())[1], "reference_unavailable")
+        player.play()
+        origin, j, lag_ms = None, 0, None
+        echo_in, echo_out, mixed_out, near_input, near_only_gain = [], [], [], [], []
+        states, pending = [], []
+        deadline = time.monotonic() + 9
+        while (pos := player.position_ms() or 0) < 6300:
+            self.assertLess(time.monotonic(), deadline, player.error)
+            player.poll()
+            if origin is None and pos >= 40:
+                origin = pos
+            while origin is not None and pos >= origin + 10 * (j + 1):
+                start = origin + 10 * j                 # playback ms when this block began
+                first = (start - 30) * 48
+                echo = far[first:first + 480] * .65
+                near = 1700 * np.sin(2*np.pi*880*(np.arange(480) + j*480)/rate)
+                pending.append((start, (echo + (near if start >= 4000 else 0)).astype("<i2"), near))
+                j += 1
+                if len(pending) < read_ms // 10:
+                    continue
+                read = np.concatenate([mic for _, mic, _ in pending])
+                output, state = player.cancel_echo(read.tobytes(), player.clock() - (pos - pending[0][0]))
+                states.append(state)
+                self.assertEqual(len(output), len(read.tobytes()))
+                output = np.frombuffer(output, dtype="<i2").astype(float)
+                for k, (block_start, mic, block_near) in enumerate(pending):
+                    if lag_ms is None and block_start >= 2000:
+                        lag_ms = self._reference_lag_ms(player, far, block_start)
+                    if state != "active":
+                        continue
+                    block_out = output[k * 480:(k + 1) * 480]
+                    if 2500 <= block_start < 3950:
+                        echo_in.extend(mic.astype(float))
+                        echo_out.extend(block_out)
+                    elif 4600 <= block_start < 4950:
+                        mixed_out.extend(block_out)
+                        near_input.extend(block_near)
+                    elif block_start >= 5600:
+                        basis = np.exp(2j*np.pi*880*np.arange(480)/rate)
+                        near_only_gain.append(abs(block_out @ basis) / abs(block_near @ basis))
+                pending = []
+            time.sleep(.002)
+        self.assertTrue({"active", "warming_up"} <= set(states), states)
+        self.assertGreater(len(echo_out), rate // 2)
+        self.assertGreater(len(mixed_out), rate // 6)
+        erle = 10*np.log10(np.mean(np.square(echo_in))/max(1, np.mean(np.square(echo_out))))
+        near_gain = np.sqrt(np.mean(np.square(mixed_out))/np.mean(np.square(near_input)))
+        tone_gain = float(np.median(near_only_gain))
+        print(f"Linear fallback, {read_ms} ms reads: echo attenuation {erle:.1f} dB, mixture/near-end RMS "
+              f"{near_gain:.2f}, near-only tone gain {tone_gain:.2f}, reference vs position {lag_ms} ms")
+        # The tap must hold, at each running time, what the position says is playing.
+        self.assertIsNotNone(lag_ms)
+        self.assertLess(abs(lag_ms), 20)
+        self.assertGreater(erle, 6)
+        self.assertGreater(near_gain, .15)
+        self.assertGreater(tone_gain, .5)        # no suppressor: the near tone is not turned down
+        return player
+
+    def test_linear_fallback_cancels_echo_keeps_the_near_tone_and_resets_on_seek(self):
+        player = self._play_scene(read_ms=10)
+        self.assertTrue(player.seek(750))
+        self.assertIsNone(player._echo)
+        player.pause()
+        self.assertEqual(player.cancel_echo(bytes(960), player.clock())[1], "reference_unavailable")
+
+    def test_500_ms_microphone_reads_are_cancelled_too(self):
+        # Qt's PulseAudio source on Linux reads 500 ms at a time. The first sample of such a
+        # read is about 500 ms older than the newest tapped audio; measured from it, every
+        # read was rejected and the canceller never ran in the app.
+        self._play_scene(read_ms=500)
