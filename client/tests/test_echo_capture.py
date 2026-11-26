@@ -61,6 +61,21 @@ class RawTrackTest(unittest.TestCase):
         self.assertEqual(uploaded, [(bytes(16000), 1000, "uncancelled")])
         self.assertFalse(mic.recording)
 
+    def test_cancelled_chunks_are_stamped_back_by_the_canceller_delay(self):
+        # The linear canceller's output is one block (16 ms) behind its input. The raw track
+        # keeps the device time; the analysed chunk is stamped when its audio was captured.
+        raw, uploaded = [], []
+        session = SimpleNamespace(
+            state=Conn.CONNECTED, view=SimpleNamespace(sensors={"microphone": SimpleNamespace(enabled=True, generation=1)}),
+            send_audio=lambda chunk, stamp, aec: uploaded.append((stamp, aec)) or True,
+        )
+        mic = LiveMicrophone(session, player=SimpleNamespace(echo_delay_ms=16),
+                             on_pcm=lambda chunk, stamp: raw.append(stamp), keep_s=0)
+        mic.feed(bytes(16000), end_ms=1500, aec="active")
+        mic.feed(bytes(16000), end_ms=2000, aec="reference_unavailable")
+        self.assertEqual(raw, [1000, 1500])
+        self.assertEqual(uploaded, [(984, "active"), (1500, "reference_unavailable")])
+
     def test_jitter_and_resampler_delay_keep_capture_time_and_aec_with_pcm(self):
         # Three contiguous 10 ms device buffers are delivered at uneven intervals.
         # The 48 -> 16 kHz converter emits no output, then 15 ms, then 15 ms.
