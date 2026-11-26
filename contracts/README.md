@@ -70,7 +70,7 @@ Microphone audio goes to the server in binary WebSocket frames, so samples are n
 | `event.capture.start_ms` / `end_ms` | Reaction interval. `end_ms` is `null` until `FINAL`. |
 | `event.generations` | Microphone and camera generation in effect at capture. `camera: null` = camera was off. |
 | `event.playback` | `{"status": "mapped", epoch, content_id, title, timecode_start_ms, timecode_end_ms}` or `{"status": "pending"}` while no anchor exists. Never guessed. |
-| `event.source` | Model ID, config version and AEC status (`active`, `warming_up`, `reference_unavailable`, `uncancelled`, `off`). The server's model ID ends in the weights' SHA-256 prefix, e.g. `google/yamnet/1@sha256:c59c5744e1b92942`. |
+| `event.source` | Model ID, config version and AEC status (`active`, `warming_up`, `reference_unavailable`, `uncancelled`, `off`). A model loaded from files ends in its weights' SHA-256 prefix, e.g. `google/yamnet/1@sha256:c59c5744e1b92942`; the stand-in `loudness-standin` has none. |
 
 All `*_ms` capture times are milliseconds on the **PC monotonic clock**. Network arrival time and wall-clock time are never used as capture time. Content timecode is `position_ms + rate × (t − anchor.capture_ms)` within one playback epoch.
 

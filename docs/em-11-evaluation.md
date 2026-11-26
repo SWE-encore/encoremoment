@@ -34,7 +34,7 @@ The labels are per clip, not per moment. A "laughter" clip can also hold speech 
 
 `server/tools/em11_eval.py` sends each clip into the real `ServerSession` as a PC would: 0.5 s audio chunks, microphone generation 1, camera off. Everything after the socket is production code: admission, 0.975 s windows every 0.48 s, YAMNet, the room baseline and the detector.
 
-- **Model:** YAMNet `google/yamnet/1` from the TF-Hub cache, with TensorFlow 2.18.1, tensorflow-hub 0.16.1 and numpy 1.26.4. Each reaction is the highest score among its YAMNet classes (`server/encore_server/models.py`): laughter is Laughter, Baby laughter, Giggle, Snicker, Belly laugh and Chuckle/chortle; scream is Screaming; gasp is Gasp.
+- **Model:** YAMNet `google/yamnet/1` from the TF-Hub cache (weights `sha256:c59c5744e1b92942`, the name events now carry), with TensorFlow 2.18.1, tensorflow-hub 0.16.1 and numpy 1.26.4. Each reaction is the highest score among its YAMNet classes (`server/encore_server/models.py`): laughter is Laughter, Baby laughter, Giggle, Snicker, Belly laugh and Chuckle/chortle; scream is Screaming; gasp is Gasp.
 - **Two server set-ups:**
   - **audio-only:** no face model; `DetectorConfig` `detector-v1` opens at laughter .4, scream .4, gasp .3. `detector-v2` (section 5) changes laughter to .25.
   - **face-server:** started with a face model, as in the demo, with the camera off. Laughter then opens on sound alone at `TabRules.strong_audio` .25. Scream and gasp are the same as audio-only.
@@ -210,7 +210,7 @@ Possible next steps. Each needs a team decision. Tune on development data (`em11
 
 | Criterion | Status |
 |---|---|
-| Three reaction types from a versioned model, window and thresholds | Built. Each event carries `source.model` (`google/yamnet/1`) and `source.config` (`detector-v2`, or the fusion string). The window and hop are fixed in `audio.py`. The spec also asks for a model checksum, and events do not carry one. |
+| Three reaction types from a versioned model, window and thresholds | Built. Each event carries `source.model` with the weights' SHA-256 prefix (`google/yamnet/1@sha256:c59c5744e1b92942`, PR #52) and `source.config` (`detector-v2`, or the fusion string). The window and hop are fixed in `audio.py`. |
 | Camera off or no face: audio only; one strong face counts, several weak faces do not add up | Camera off: this evaluation, and EM-26's scripted cases (PR #45). No face found: EM-26's `no-face-*` cases. Several faces: the face worker scores up to 4 faces and keeps the largest smile (`vision.py`, `max(smiles)`), so one strong face counts and weak faces never add up; no test feeds it several real faces. EM-26's cases were not rerun here. |
 | Per-class errors and detection delay on separate evaluation input | This document: levels chosen on development clips (section 5), errors and delay on separate evaluation clips. The accuracy target is still to be set. |
 
