@@ -97,6 +97,23 @@ def test_mic_off_splits_capture_and_prevents_more_audio(tmp_path):
     dev.shutdown()
 
 
+def test_frames_are_offered_by_audio_span_and_forgotten_when_the_camera_stops(tmp_path):
+    now, ctl, dev = rig(tmp_path)
+    ctl.enable()
+    for _ in range(5):  # frames at 100 000 .. 100 400
+        dev.poll([])
+        now[0] += 100
+    assert dev.latest_face(100_050, 100_250)[:2] == (1, 100_200)  # the newest inside the span
+    assert dev.latest_face(100_450, 100_950) is None
+    ctl.disable()
+    assert dev.latest_face(100_000, 100_500) is None
+    ctl.enable()
+    dev.poll([])  # first frame of the new capture, at 100 500
+    assert dev.latest_face(100_000, 100_500) is None  # generation 1 frames are gone
+    assert dev.latest_face(100_500, 101_000)[:2] == (dev.generation, 100_500) and dev.generation > 1
+    dev.shutdown()
+
+
 def test_refires_capped_linked_parts_and_duplicate_revisions(tmp_path):
     _, ctl, dev = rig(tmp_path)
     ctl.enable()

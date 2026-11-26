@@ -44,6 +44,7 @@ python3 -m venv --system-site-packages .venv   # system site packages provide Py
 | Feature | Linux (Ubuntu 24.04) | macOS |
 |---|---|---|
 | Live microphone (`--mic`) | Qt at 16 kHz | Native format, resampled with soxr (Qt's 16 kHz path lost ~27% of the audio, #40) |
+| Microphone read period | 100 ms (Qt buffer; 500 ms reads sent each chunk ~350 ms late) | Qt buffer 500 ms; read period not measured |
 | Audience-camera recorder and clips | GStreamer `v4l2src` | Not available; the camera panel says so |
 | Content player (GStreamer) | Yes | Not set up; use `--no-player` |
 | Session, highlights, saved clips, test bench | Yes | Yes |
