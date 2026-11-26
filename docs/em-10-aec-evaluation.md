@@ -74,7 +74,7 @@ No processor made the echo alone trigger laughter (0 false windows everywhere).
 - The room is a linear synthetic response; real speakers add non-linear distortion a linear filter cannot remove. Next: a real room recording (EM-10 acceptance case 2).
 - Playback was speech only; music and effects are untested with YAMNet.
 - With no echo the canceller still loses some windows (56 vs the 61 of a pure shift): the background is sometimes copied during a laugh. A stricter copy rule is the next tuning step.
-- Wired in as the player's fallback when `webrtcdsp`/`webrtcechoprobe` are missing (section 8). Letting the user switch it (R12, EM-21) comes next.
+- Wired in as the player's fallback when `webrtcdsp`/`webrtcechoprobe` are missing (section 8). The user can now switch it and see the requested and effective mode (R12, EM-21: `docs/em-21-aec-mode.md`).
 
 ## 8. In the app: the player's fallback
 
