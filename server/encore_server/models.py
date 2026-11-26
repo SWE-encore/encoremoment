@@ -47,6 +47,7 @@ def tagged(name: str, digest: str) -> str:
     """The name events carry for weights with this digest."""
     return f"{name}@sha256:{digest[:SHORT_DIGEST]}"
 
+
 # YAMNet (AudioSet) display names that make up each contract reaction.
 YAMNET_CLASSES = {
     "laughter": ("Laughter", "Baby laughter", "Giggle", "Snicker", "Belly laugh", "Chuckle, chortle"),
