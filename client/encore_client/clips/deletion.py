@@ -27,8 +27,13 @@ How this module does it:
   (reference counting). It is idempotent, so retries and restarts are safe.
 - Remote cleanup goes through a ``RemoteCleanup`` with the persistent
   operation ID. Offline or failed requests stay pending and are retried.
-  Without a remote (the server has no deletion API yet) only local cleanup
-  is required.
+- The app passes no remote, because the server holds nothing to clean for
+  a clip: it analyses audio and camera frames in memory without keeping
+  them, and it stores only FINAL event metadata, which has no clip
+  reference (the contract has no clip field). Only local cleanup is
+  required, and a reconnect has no deletion intents to sync (R7, R11; Jira
+  EM-20, ``client/docs/em-20-reconnect.md``). Pass a ``RemoteCleanup`` if
+  the server ever keeps clip media or references.
 - On restart, incomplete deletions are resumed before export commits are
   allowed.
 """
