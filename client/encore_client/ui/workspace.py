@@ -20,6 +20,8 @@ from .camera_panel import CameraPanel
 from .highlights import HighlightsPanel
 
 ACTIVE = STARTED  # Start pressed, End not: a drop does not stop the devices
+MUTED_TEXT = ("Microphone: no sound at all, so reactions cannot be detected. "
+              "Is this microphone muted in the system settings?")
 
 
 class Workspace(QWidget):
@@ -54,6 +56,11 @@ class Workspace(QWidget):
         self.aec_label = QLabel()
         self.aec_label.hide()
         layout.addWidget(self.aec_label)
+        self.mic_muted = QLabel(MUTED_TEXT)
+        self.mic_muted.setWordWrap(True)
+        self.mic_muted.setStyleSheet("color: #c62828; font-weight: 600")
+        self.mic_muted.hide()
+        layout.addWidget(self.mic_muted)
         self.recording_error = QLabel()
         self.recording_error.setWordWrap(True)
         self.recording_error.hide()
@@ -193,6 +200,9 @@ class Workspace(QWidget):
         elif self.live_microphone is not None:
             self.aec_label.setText(f"Echo cancellation: {self.live_microphone.aec_status}")
             self.aec_label.setVisible(True)
+            # Only while the microphone is on: its zeros from before it was turned off are stale.
+            self.mic_muted.setVisible(self.session.state in ACTIVE and self.live_microphone.muted
+                                      and self.session.view.sensors["microphone"].enabled)
         self.deletions.tick()
         self.clips.sync()
         self.refresh_event_link()

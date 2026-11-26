@@ -35,7 +35,7 @@ from gi.repository import Gst  # noqa: E402
 from ..clock import monotonic_ms  # noqa: E402
 from .anchors import AnchorTracker, content_identity  # noqa: E402
 from .echo import EchoFilter  # noqa: E402
-from .linear_echo import LinearEchoPath, ReferenceBuffer  # noqa: E402
+from .linear_echo import OUTPUT_DELAY_MS, LinearEchoPath, ReferenceBuffer  # noqa: E402
 
 Gst.init(None)
 
@@ -83,6 +83,7 @@ class PlayerPipeline:
         # Homebrew), so the player taps its own audio and uses the linear canceller (EM-10).
         self.echo_reference = "available" if echo_probe_available() else "linear"
         self._reference = ReferenceBuffer()
+        self._echo_bulk_ms = 0      # the room's measured echo delay, kept across seeks (linear mode)
         self.pipeline: Gst.Pipeline | None = None
         self.path: Path | None = None
         self.rate = 1.0
@@ -356,8 +357,15 @@ class PlayerPipeline:
         self._reference_end_ns = start_ns + added * Gst.SECOND // 48_000
         return Gst.PadProbeReturn.OK
 
+    @property
+    def echo_delay_ms(self) -> int:
+        """How far the cleaned microphone audio is behind the raw audio while cancelling."""
+        return OUTPUT_DELAY_MS if self.echo_reference == "linear" else 0
+
     def reset_echo(self):
         if self._echo is not None:
+            if isinstance(self._echo, LinearEchoPath):
+                self._echo_bulk_ms = self._echo.bulk_ms   # a seek does not move the speakers
             self._echo.close()
             self._echo = None
         self._reference_end_ns = None
@@ -374,7 +382,7 @@ class PlayerPipeline:
         now_ns = clock.get_time() - pipeline.get_base_time()
         pts = now_ns - (self.clock() - capture_ms) * Gst.MSECOND
         # live_mic passes a whole microphone read at once, and its size depends on the platform:
-        # Qt's PulseAudio source reads 500 ms at a time. The linear path keeps 2 s of reference,
+        # Qt's PulseAudio source reads 500 ms at a time. The linear path keeps 3 s of reference,
         # so what must be close to the tap is the block's newest sample. Measured from the
         # oldest one, a 500 ms read was always more than 500 ms behind the tap and rejected.
         edge = pts + len(pcm) // 2 * Gst.SECOND // 48_000 if self.echo_reference == "linear" else pts
@@ -383,7 +391,7 @@ class PlayerPipeline:
             return pcm, "reference_unavailable"
         if self.echo_reference == "linear":
             if self._echo is None:
-                self._echo = LinearEchoPath(self._reference)
+                self._echo = LinearEchoPath(self._reference, bulk_ms=self._echo_bulk_ms)
             return self._echo.process(pcm, pts)
         if self._echo_failed:
             return pcm, "reference_unavailable"

@@ -64,7 +64,7 @@ class FakeRecorder:
         self.closed.append(generation)
         self.listener.on_stopped(generation)
 
-    def latest_face(self):
+    def latest_face(self, start_ms=None, end_ms=None):
         return None
 
     def feed_audio(self, pcm, capture_ms):

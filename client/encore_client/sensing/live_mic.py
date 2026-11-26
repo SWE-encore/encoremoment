@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import deque
 from typing import Callable
 
-from ..platform_support import native_microphone_format
+from ..platform_support import microphone_buffer_ms, native_microphone_format
 
 from ..clock import monotonic_ms
 from ..session.contract import AUDIO_RATE
@@ -19,6 +19,7 @@ CHUNK_MS = 500
 RESYNC_MS = 250  # timestamps this far from the clock: samples were lost, start a new run
 SETTLE_MS = 150  # a device's first samples can be a full-scale pop (measured: ~25 ms on a laptop microphone)
 MAX_RECORDING_S = 600
+MUTED_AFTER_MS = 1_500  # a real room is never exactly zero for this long
 
 
 class LiveMicrophone:
@@ -61,14 +62,26 @@ class LiveMicrophone:
         self.zero_ms = 0
 
     def device_started(self, settle_ms: int = SETTLE_MS) -> None:
-        """The device just opened: discard its first ``settle_ms`` of audio."""
+        """The device just opened: discard its first ``settle_ms`` of audio. Zeros
+        counted before it was closed say nothing about the device now."""
         self._skip = AUDIO_RATE * settle_ms // 1000 * 2
+        self.zero_ms = 0
+
+    @property
+    def muted(self) -> bool:
+        """The device has delivered only exact zeros for ``MUTED_AFTER_MS``: its input
+        is muted (system settings or a hardware switch), not a quiet room."""
+        return self.zero_ms >= MUTED_AFTER_MS
 
     def _reset_run(self):
         self._buf.clear()
         self._raw_buf.clear()
         self._statuses.clear()
         self._run = None
+
+    @property
+    def echo_delay_ms(self) -> int:
+        return getattr(self.player, "echo_delay_ms", 0) if self.player is not None else 0
 
     def camera_recording_enabled(self) -> bool:
         sensors = self.session.view.sensors
@@ -176,7 +189,10 @@ class LiveMicrophone:
                     self._statuses.appendleft((count - take, state))
             # A chunk spanning a reset must never advertise fully active AEC.
             chunk_aec = next(iter(states)) if len(states) == 1 else "uncancelled"
-            if connected and self.session.send_audio(chunk, capture_ms, aec=chunk_aec):
+            # The canceller's output is behind its input (16 ms for the linear one), so the
+            # analysed audio was captured that much before the raw audio's timestamp.
+            stamp = capture_ms - (self.echo_delay_ms if chunk_aec in ("active", "warming_up") else 0)
+            if connected and self.session.send_audio(chunk, stamp, aec=chunk_aec):
                 sent += 1
         self.sent += sent
         return sent
@@ -261,7 +277,8 @@ class QtAudioInput:
         self.mic = mic
         self.device = device
         self.source = QAudioSource(device, fmt)
-        self.source.setBufferSize(fmt.bytesForDuration(500_000))  # 0.5 s in device format
+        # In device format. On Linux this is also the read period (platform_support).
+        self.source.setBufferSize(fmt.bytesForDuration(microphone_buffer_ms() * 1000))
         self._io = None
 
     def _reset_echo(self):

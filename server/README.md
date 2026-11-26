@@ -72,7 +72,7 @@ To run the database integration test, point `ENCORE_TEST_DATABASE_URL` at a dedi
 
 | Part | File | Behaviour |
 |---|---|---|
-| Stream | `server.py` | `/v1/sessions/<session_id>/stream`; any other path gets 404. On connect it first sends every committed result after `?after=<cursor>` (default 0), so a reconnecting PC catches up (R11). A new connection for the same session replaces the old one. A normal close (1000, the PC's End) ends the session; a dropped connection leaves it open. |
+| Stream | `server.py` | `/v1/sessions/<session_id>/stream`; any other path gets 404. On connect it first sends every committed result after `?after=<cursor>` (default 0), so a reconnecting PC catches up (R11). A new connection for the same session replaces the old one. A normal close (1000, the PC's End) ends the session; a dropped connection leaves it open for 60 s (`LEASE_S`). If the PC has not reconnected by then, the server ends the session as End would (open reactions get their FINAL, which is archived when history is on) and forgets it, so a later connection starts a new session that the PC reports as lost. |
 | Session state | `session.py` | Mirrors the PC's state with the contract's own receiver (`SessionView`), so sensor generations, anchors and audio admission follow exactly the rules the PC applies. Every control gets a `control_ack`: `applied`, `duplicate` (a retried idempotency key) or `rejected` with the receiver's reason. Invalid messages are counted and not answered. |
 | Audio admission | `session.py` | Audio is analysed only while the microphone is on, in its current generation (R8). Retried chunks are ignored, and old-generation chunks still in flight after the microphone is turned off are never analysed. |
 | Windows | `audio.py` | 0.5 s chunks become 0.975 s windows every 0.48 s (one YAMNet frame each). A missing chunk, a time jump or a new generation starts a fresh run, so no window spans missing audio. |
@@ -80,14 +80,14 @@ To run the database integration test, point `ENCORE_TEST_DATABASE_URL` at a dedi
 | Intensity | `audio.py` | Loudness above the room's quiet level (10th percentile of the last minute), 0 to 1 over 40 dB (R3). |
 | Face frames | [vision.py](encore_server/vision.py) | Runs Face Landmarker in its model environment and returns a smile score for each analysed frame. |
 | Rolling fusion | [fusion.py](encore_server/fusion.py) | Combines audio and face observations from the last five seconds for laughter detection. The [tab demo](../client/tab-demo/README.md) describes the thresholds and capture timing. |
-| Audio-only detector | `detector.py` | OPEN when a reaction's score reaches its trigger (laughter 0.4, scream 0.4, gasp 0.3), UPDATE when it fires again at least 2 s after the last trigger, FINAL after 1.5 s below 60 % of the trigger. Turning the microphone off, the PC ending the session, or 2 s without audio closes open events. |
+| Audio-only detector | `detector.py` | OPEN when a reaction's score reaches its trigger (`detector-v2`: laughter 0.25, scream 0.4, gasp 0.3), UPDATE when it fires again at least 2 s after the last trigger, FINAL after 1.5 s below 60 % of the trigger. Turning the microphone off, the PC ending the session, or 2 s without audio closes open events. |
 | Playback | `session.py` | Each event's capture times are mapped to content timecode through the PC's playback anchors (R3). Without an anchor at or before the event, playback stays `pending`; it is never guessed. If the content or seek epoch changed before the event ended, the end timecode is `null`. |
 
 Every event carries `source.model`, `source.config` (including the window and thresholds for fused laughter) and the `aec` status of the audio it came from, so results from different models or settings can be told apart.
 
 ## Not done yet
 
-- **Tuning on real audience audio.** The thresholds are starting values. YAMNet has been checked on silence, a test tone and Google's cat recording (no reaction events), not yet on recorded laughter, screams or gasps in a living room with the content playing. This needs the team's test recordings, ideally with AEC on (EM-10).
+- **Tuning on real audience audio.** The laughter level was chosen on FSD50K development clips and measured on separate FSD50K evaluation clips ([EM-11](../docs/em-11-evaluation.md)). Scream and gasp are still starting values. None has been checked on recorded laughter, screams or gasps in a living room with the content playing. This needs the team's test recordings, ideally with AEC on (EM-10).
 - **Persistence and the session API** (EM-20, design §IV): live cursor and control state are process-local. Start/End HTTP and authentication remain open.
 - **Distributed inference.** The server runs YAMNet off the event loop and starts a local subprocess when face inference is enabled.
 
