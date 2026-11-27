@@ -1,0 +1,4 @@
+# EM-11 model comparison, notebook 1 (prepare) and the analysis: no model libraries.
+# Python 3.12; ffmpeg comes from the Kaggle image.
+-r ../../requirements.txt
+numpy==1.26.4

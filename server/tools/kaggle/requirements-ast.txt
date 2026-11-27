@@ -1,0 +1,9 @@
+# EM-11 model comparison: AST (ast-pad10s, ast-cut1s, ast-clip) and the analysis.
+# Python 3.12 on a Kaggle T4 (the PyPI torch 2.5.1 wheel is built for CUDA 12.4).
+-r ../../requirements.txt
+torch==2.5.1
+torchaudio==2.5.1
+transformers==4.46.3
+huggingface-hub==0.26.2
+safetensors==0.4.5
+numpy==1.26.4
