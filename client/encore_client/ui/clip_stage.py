@@ -12,7 +12,8 @@ film again, where it was paused.
 A clip has two pictures: the audience camera, and the screen as it was at the
 same moments, if Screen recording was on (clips/screen.py, ui/screen_view.py).
 They show as Camera and Screen tabs, or side by side; the choice stays for the
-next clip.
+next clip. Download saves the part between the borders as MP4
+(ui/download_dialog.py).
 """
 from __future__ import annotations
 
@@ -41,12 +42,15 @@ class VideoStage(QStackedWidget):
         self.side_by_side = QPushButton("Side by side")
         self.side_by_side.setCheckable(True)
         self.side_by_side.setToolTip("Show the camera and the screen next to each other")
+        self.download_btn = QPushButton("⤓ Download")
+        self.download_btn.setToolTip("Save the part between the borders as an MP4 video")
         self.back_btn = QPushButton("■ Back to film")
         bar = QHBoxLayout()
         bar.setContentsMargins(6, 4, 6, 4)
         bar.addWidget(self.clip_title, 1)
         bar.addWidget(self.view_tabs)
         bar.addWidget(self.side_by_side)
+        bar.addWidget(self.download_btn)
         bar.addWidget(self.back_btn)
         self.pictures = QHBoxLayout()
         self.pictures.setContentsMargins(0, 0, 0, 0)
@@ -71,6 +75,7 @@ class VideoStage(QStackedWidget):
         self._show_pictures()
         clips.player.playbackStateChanged.connect(self._clip_state)
         self.back_btn.clicked.connect(self.show_film)
+        self.download_btn.clicked.connect(clips.download_playing)
         clips.stop_button.clicked.connect(self.show_film)
 
     def showing_clip(self) -> bool:
@@ -109,6 +114,7 @@ class VideoStage(QStackedWidget):
             QTimer.singleShot(0, self._after_stop)
             return
         self.clip_title.setText(f"Reaction clip: {self.clips.now_playing}")
+        self.download_btn.setEnabled(self.clips.can_download_playing())
         if not self.showing_clip():
             self.setCurrentWidget(self.clip_page)
             self.screen.start()
