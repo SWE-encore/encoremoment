@@ -5,7 +5,8 @@ in recorder.py); its index row's ``trim_ms`` is the chosen part between them,
 in ms of the file. Playback covers the chosen part and pauses on its last frame.
 ``move_border`` and ``save_range`` change the chosen part (the borders under the
 player window's progress bar, ui/trim_bar.py); the status and gaps stay as
-recorded for the original part.
+recorded for the original part. Download clip saves the chosen part as MP4
+(clips/download.py, ui/download_dialog.py).
 """
 import json
 from pathlib import Path
@@ -14,6 +15,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import QLabel, QListWidget, QMessageBox, QPushButton, QVBoxLayout, QWidget
 from .deletion import DeletionManager
+from .download import unavailable_reason as download_unavailable_reason
 from .model import ClipStatus, effective_label, gap_detail, load_index, playable_path
 from .storage import atomic_index, index_lock
 
@@ -36,6 +38,9 @@ class ClipPanel(QWidget):
         self.detail.setWordWrap(True)
         self.play_button = QPushButton("Play saved clip")
         self.stop_button = QPushButton("Stop clip")
+        self.download_button = QPushButton("Download clip…")
+        self.download_reason = download_unavailable_reason()
+        self.download_dialog = None
         self.delete_button = QPushButton("Delete clip…")
         self.refresh_button = QPushButton("Refresh saved clips")
         # Shown under the buttons, unless the player window takes it for its big
@@ -67,6 +72,7 @@ class ClipPanel(QWidget):
         self.list.currentRowChanged.connect(self.select)
         self.play_button.clicked.connect(self.play)
         self.stop_button.clicked.connect(self.player.stop)
+        self.download_button.clicked.connect(self.download_selected)
         self.delete_button.clicked.connect(lambda: self.delete_selected())
         self.refresh_button.clicked.connect(self.reload)
         self.delete_button.setVisible(deletions is not None)
@@ -78,7 +84,7 @@ class ClipPanel(QWidget):
         label.setWordWrap(True)
         layout.addWidget(label)
         for widget in (self.list, self.detail, self.play_button, self.stop_button,
-                       self.delete_button, self.refresh_button, self.video):
+                       self.download_button, self.delete_button, self.refresh_button, self.video):
             layout.addWidget(widget)
         self.reload()
 
@@ -143,6 +149,10 @@ class ClipPanel(QWidget):
         clip = self.selected()
         path = playable_path(clip, self.index_path.parent) if clip else None
         self.play_button.setEnabled(path is not None)
+        self.download_button.setEnabled(path is not None and self.download_reason is None)
+        self.download_button.setToolTip(
+            f"Cannot download clips: {self.download_reason}." if self.download_reason
+            else "Save the part between the borders as an MP4 video.")
         self.delete_button.setEnabled(
             clip is not None and self.deletions is not None
             and clip.status not in (ClipStatus.DELETION_PENDING, ClipStatus.DELETED))
@@ -261,6 +271,28 @@ class ClipPanel(QWidget):
             self.reload()
             return
         self.play_file(path)
+
+    # ---- download -------------------------------------------------------------------
+
+    def download_selected(self):
+        clip = self.selected()
+        return self.download(clip) if clip is not None else None
+
+    def download_playing(self):
+        return self.download(self.playing_clip) if self.playing_clip is not None else None
+
+    def can_download_playing(self) -> bool:
+        return (self.playing_clip is not None and self.download_reason is None
+                and playable_path(self.playing_clip, self.index_path.parent) is not None)
+
+    def download(self, clip):
+        """Open Download clip for ``clip`` (ui/download_dialog.py). The clip in the
+        player downloads with its borders as they are now, saved or not."""
+        from ..ui.download_dialog import DownloadDialog
+        range_ms = self.play_range() if clip.clip_id == self.playing_id and self._play_range else None
+        self.download_dialog = DownloadDialog(clip, self.index_path.parent, range_ms, self.window())
+        self.download_dialog.open()
+        return self.download_dialog
 
     # ---- deletion (R7) ----------------------------------------------------------------
 
