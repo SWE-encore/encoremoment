@@ -9,7 +9,7 @@ recorded for the original part.
 """
 import json
 from pathlib import Path
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import QLabel, QListWidget, QMessageBox, QPushButton, QVBoxLayout, QWidget
@@ -44,6 +44,16 @@ class ClipPanel(QWidget):
         self.video.setMinimumSize(240, 135)
         self.now_playing = ""
         self.audio = QAudioOutput(self)
+        # Qt 6.8's FFmpeg backend rebuilds its audio renderer on every seek. Its
+        # own thread destroys the old one, calling this object's disconnectNotify
+        # while it holds a Qt connection lock. The first such call makes PySide
+        # take the GIL to look for a Python override, while the main thread holds
+        # the GIL in setPosition, waiting for that lock to connect the new
+        # renderer: a deadlock (dragging a border froze the tests). One disconnect
+        # here, on the main thread, does that lookup once; PySide caches it.
+        warm_up = QTimer()
+        self.audio.mutedChanged.connect(warm_up.stop)
+        self.audio.mutedChanged.disconnect(warm_up.stop)
         self.player = QMediaPlayer(self)
         self.player.setAudioOutput(self.audio)
         self.player.setVideoOutput(self.video)
