@@ -113,9 +113,22 @@ def test_full_entrypoint_player_session_and_clip_review(app, monkeypatch, tmp_pa
             wait_for(app, lambda: workspace.clips.player.position() > 100)
             assert not win.player.want_playing
             assert win.player.title == original_content
+            # The clip plays in the big video area over the paused film, not in the panel.
+            assert win.stage.showing_clip()
+            assert workspace.clips.video.parent() is win.stage.clip_page
             screenshot = os.environ.get("ENCORE_INTEGRATION_SCREENSHOT")
             if screenshot:
                 win.grab().save(screenshot)
+            # While the clip shows, the window's controls play and pause the clip, not the film.
+            wait_for(app, lambda: win.slider.maximum() == workspace.clips.player.duration())
+            win.toggle()
+            assert workspace.clips.player.playbackState().name == "PausedState"
+            assert win.stage.showing_clip() and not win.player.want_playing
+            # Back to film shows the film where it was; Play then plays the film.
+            win.stage.back_btn.click()
+            assert not win.stage.showing_clip()
+            win.toggle()
+            assert win.player.want_playing and win.player.title == original_content
         finally:
             workspace.shutdown()
             win.close()
