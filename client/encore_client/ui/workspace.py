@@ -232,7 +232,10 @@ class Workspace(QWidget):
             self.play_clip(path)
 
     def play_clip(self, path):
-        """Play a highlight's clip in the Saved clips player (pauses the content player)."""
+        """Play a highlight's clip with the Saved clips player (pauses the content player).
+
+        With the film player, the clip shows in its big video area (ui/clip_stage.py);
+        without it (--no-player), under the Saved clips buttons."""
         self.tabs.setCurrentWidget(self.clips)
         self.clips.play_file(path)
 

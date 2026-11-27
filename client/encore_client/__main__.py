@@ -194,6 +194,8 @@ def main(argv=None):
             win.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
             win.resize(1440, 900)
             win.resizeDocks([dock], [560], Qt.Orientation.Horizontal)
+            # Saved clips play in the big video area, over the paused film.
+            win.stage.attach_clip_panel(workspace.clips)
             workspace.clips.player.playbackStateChanged.connect(
                 lambda state: win.player.pause() if state.name == "PlayingState" else None)
             win.anchor_sent.connect(
