@@ -41,6 +41,8 @@ class Workspace(QWidget):
         self.recorder = None
         self.live_microphone = None
         self.echo = None   # EchoControl (R12), under the microphone control
+        self.screen = None        # ScreenRecorder (clips/screen.py), with desktop capture
+        self.screen_panel = None
         self._camera_device = camera_device
         self._recorder_factory = recorder_factory
         if recorder_factory is not None:
@@ -117,6 +119,14 @@ class Workspace(QWidget):
         layout = self.layout()
         layout.insertWidget(layout.indexOf(self.sensing) + 1, self.microphone)
 
+    def add_screen_recording(self, recorder, unavailable_reason=None):
+        """Show the Screen switch under the camera control (clips/screen.py)."""
+        from .screen_panel import ScreenPanel
+        self.screen = recorder
+        self.screen_panel = ScreenPanel(recorder, unavailable_reason)
+        layout = self.layout()
+        layout.insertWidget(layout.indexOf(self.camera_panel) + 1, self.screen_panel)
+
     def add_echo_control(self, mode):
         """Show the echo cancellation switch and its requested/effective mode (R12).
         It replaces the plain status line and follows each new session."""
@@ -177,6 +187,8 @@ class Workspace(QWidget):
         self.refresh()
 
     def end_session(self):
+        if self.screen is not None:
+            self.screen.turn_off()
         if self.camera is not None:
             self.camera.stop_for_session_end()
         if self.microphone is not None:
@@ -204,6 +216,13 @@ class Workspace(QWidget):
             self.mic_muted.setVisible(self.session.state in ACTIVE and self.live_microphone.muted
                                       and self.session.view.sensors["microphone"].enabled)
         self.deletions.tick()
+        if self.screen is not None:
+            active = self.session.state in ACTIVE
+            if not active and self.screen.on:
+                self.screen.turn_off()   # the session ended or dropped out of Start
+            self.screen.sessions.add(self.session.session_id)
+            self.screen.poll()
+            self.screen_panel.refresh(active)
         self.clips.sync()
         self.refresh_event_link()
         self.highlights.refresh()
@@ -247,6 +266,8 @@ class Workspace(QWidget):
         if self.recorder is not None:
             self.session.camera_frame = None
             self.recorder.shutdown()
+        if self.screen is not None:
+            self.screen.turn_off()
         self.clips.player.stop()
         self.session.end()
         self.session.log.close()

@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from .screen_map import screen_segments
+
 
 class ClipStatus(str, Enum):
     PENDING = "pending"                    # Being created (waiting for post-context or FFmpeg assembly)
@@ -103,6 +105,9 @@ class Clip:
 
     trim_ms: tuple[int, ...] = ()  # Default playback excludes the retained editing handles.
     reason: str | None = None      # REASON_TEXT code, or an export error, for unavailable/partial
+    # Where its screen recording is at each moment of the clip file (clips/screen.py);
+    # None if the screen was not recorded.
+    screen: tuple | None = None
 
     @classmethod
     def from_dict(cls, d: dict) -> "Clip":
@@ -130,6 +135,7 @@ class Clip:
             temp_paths=tuple(temp_paths),
             trim_ms=tuple(d.get("trim_ms", ())),
             reason=d["reason"] if isinstance(d.get("reason"), str) else None,
+            screen=screen_segments(d),
         )
 
 
