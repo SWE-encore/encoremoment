@@ -175,6 +175,12 @@ def main(argv=None):
                               session_factory=maker if scenario is None else None)
         if scenario is None and not desktop_capture():
             workspace.camera_panel.set_unavailable_reason(camera_unavailable_reason())
+        if recorder_factory is not None:
+            # The Screen switch: the screen of each saved clip's moments (clips/screen.py).
+            from .clips.screen import ScreenRecorder, unavailable_reason
+            workspace.add_screen_recording(
+                ScreenRecorder(index_path, may_commit=workspace.deletions.may_commit_export),
+                unavailable_reason())
         if args.no_player:
             win = QMainWindow()
             win.setCentralWidget(workspace)

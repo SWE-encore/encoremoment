@@ -7,6 +7,7 @@ import pytest
 
 from encore_client.platform_support import (
     camera_unavailable_reason, desktop_capture, microphone_buffer_ms, native_microphone_format, os_label,
+    screen_capture_unavailable_reason,
 )
 
 PACKAGE = Path(__file__).resolve().parents[1] / "encore_client"
@@ -30,6 +31,15 @@ def test_the_camera_reason_names_the_os_only_where_there_is_no_recorder():
     assert camera_unavailable_reason("darwin") == "not supported on macOS yet; the recorder needs Linux V4L2"
     assert "Windows" in camera_unavailable_reason("win32")
 
+
+
+def test_screen_recording_needs_linux_with_x11():
+    x11 = {"DISPLAY": ":0", "XDG_SESSION_TYPE": "x11"}
+    assert screen_capture_unavailable_reason("linux", x11) is None
+    assert "Wayland" in screen_capture_unavailable_reason("linux", x11 | {"XDG_SESSION_TYPE": "wayland"})
+    assert "X11" in screen_capture_unavailable_reason("linux", {})
+    assert "macOS" in screen_capture_unavailable_reason("darwin", x11)
+    assert "Windows" in screen_capture_unavailable_reason("win32", x11)
 
 def test_without_an_argument_the_running_os_is_used(monkeypatch):
     import encore_client.platform_support as support

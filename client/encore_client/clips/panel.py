@@ -60,6 +60,7 @@ class ClipPanel(QWidget):
         self._play_range = ()     # (start, end) ms of the file: the chosen part, if the index has it
         self._start_on_load = None
         self.playing_id = None    # clip_id of the clip in the player, if it is in the index
+        self.playing_clip = None  # its Clip (the Screen view reads its screen segments)
         self.player.mediaStatusChanged.connect(self._loaded)
         self.player.positionChanged.connect(self._limit_playback)
         self.player.errorOccurred.connect(lambda _error, message: self.detail.setText(message))
@@ -117,6 +118,9 @@ class ClipPanel(QWidget):
             self.select(-1)
             self.detail.setText(f"Cannot load clip index: {exc}")
             return
+        if self.playing_id is not None:  # e.g. its screen file was added meanwhile
+            self.playing_clip = next((c for c in self.clips if c.clip_id == self.playing_id),
+                                     self.playing_clip)
         for clip in self.clips:
             self.list.addItem(f"{clip.event_type} · {clip.intensity:.2f} · {clip.timecode}\n"
                               f"{self._status(clip)}")
@@ -162,6 +166,7 @@ class ClipPanel(QWidget):
         trim = selected.trim_ms if selected else ()
         self._play_range = tuple(int(t) for t in trim) if len(trim) == 2 and trim[0] < trim[1] else ()
         self.playing_id = selected.clip_id if selected else None
+        self.playing_clip = selected
         self.now_playing = (" · ".join(filter(None, (selected.event_type, selected.timecode, selected.title)))
                             + f" — {self._status(selected)}" if selected else path.name)
         self.player.setSource(QUrl.fromLocalFile(str(target)))

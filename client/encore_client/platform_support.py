@@ -7,6 +7,7 @@ value) so tests can ask about another OS without patching ``sys.platform``.
 
 from __future__ import annotations
 
+import os
 import sys
 
 
@@ -50,3 +51,14 @@ def camera_unavailable_reason(platform: str | None = None) -> str | None:
     if desktop_capture(platform):
         return None
     return f"not supported on {os_label(platform)} yet; the recorder needs Linux V4L2"
+
+
+def screen_capture_unavailable_reason(platform: str | None = None, environ=None) -> str | None:
+    """Why the screen cannot be recorded for clips (``clips/screen.py``, GStreamer
+    ``ximagesrc``), or None: it needs Linux with an X11 session, not Wayland."""
+    environ = os.environ if environ is None else environ
+    if not _name(platform).startswith("linux"):
+        return f"not supported on {os_label(platform)} yet; screen recording needs Linux (X11)"
+    if environ.get("XDG_SESSION_TYPE") == "wayland" or not environ.get("DISPLAY"):
+        return "screen recording needs an X11 desktop session (not Wayland)"
+    return None
