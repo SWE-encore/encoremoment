@@ -142,6 +142,48 @@ def test_the_scored_windows_are_the_ones_serversession_makes():
     assert 0 < len(touching) < len(ours)
 
 
+def test_whole_clips_are_cut_into_full_ast_pieces():
+    size = core.AST_SAMPLES
+    assert models.clip_pieces(5_000) == [(0, 5_000)] and models.clip_pieces(size) == [(0, size)]
+    # The clip that stopped the first full run: 127 samples past one piece.
+    assert models.clip_pieces(size + 127) == [(0, size), (127, size + 127)]
+    assert models.clip_pieces(2 * size) == [(0, size), (size, 2 * size)]
+    for n in (size + 1, 2 * size + 1, 3 * size - 1, 5 * size + 399, 7 * size + 12_345):
+        pieces = models.clip_pieces(n)
+        assert all(b - a == size for a, b in pieces)  # never a short leftover
+        assert pieces[0][0] == 0 and pieces[-1][1] == n
+        assert all(a2 <= b1 for (_, b1), (a2, _) in zip(pieces, pieces[1:]))  # no gap between pieces
+        assert len(pieces) == -(-n // size)
+    assert models.FBANK_MIN == 400
+
+
+def test_preflight_adds_the_clips_most_likely_to_break_a_stage():
+    size = core.AST_SAMPLES
+    groups = {g: [] for g in core.GROUPS}
+    groups.update(laughter=["1", "2"], speech=["3", "4"], music=["5"])
+    samples = {"1": 32_000, "2": size + 127, "3": 4_800, "4": 2 * size + 5_000, "5": 3 * size + 50_000,
+               "6": 20_000, "7": 5 * size + 1_000, "8": 16_000}
+    dev_groups = {g: [] for g in core.GROUPS} | {"laughter": ["21"], core.EVERYDAY: ["22", "23"]}
+    manifest = {"selection": {"eval": {"groups": groups, core.EVERYDAY: ["6", "7", "8"]},
+                              "dev": {"groups": dev_groups, core.EVERYDAY: []}},
+                "files": {**{f"eval/{f}": {"samples": n} for f, n in samples.items()},
+                          "dev/21": {"samples": 9_000}, "dev/22": {"samples": size + 400}, "dev/23": {"samples": 700}}}
+    sel, extra = core.preflight(manifest, per_group=1)
+    ev = sel["eval"]
+    assert ev["groups"]["laughter"] == ["1", "2"]  # "2": the shortest last piece, kept in its own group
+    assert ev["groups"]["speech"] == ["3"]         # the first speech clip is also the shortest clip
+    assert ev[core.EVERYDAY] == ["6", "7", "8"] and ev["groups"]["music"] == ["5"]
+    assert extra == {
+        "eval/3": "shortest: 0.30 s, group speech",
+        "eval/7": "longest, last piece 1000 samples: 51.26 s, group everyday",
+        "eval/2": "last piece 127 samples: 10.25 s, group laughter",
+        "dev/23": "shortest: 0.04 s, group everyday",
+        "dev/22": "longest, last piece 400 samples: 10.27 s, group everyday"}
+    assert sel["dev"]["groups"][core.EVERYDAY] == ["22", "23"]
+    assert manifest["selection"]["eval"]["groups"]["laughter"] == ["1", "2"]  # the manifest is untouched
+    assert core.chosen(manifest, 1) == core.limited(manifest["selection"], 1)
+
+
 def test_position_embeddings_keep_the_middle_time_patches():
     freq, time_, keep, d = 12, 101, 9, 3
     index = np.arange(freq * time_)
@@ -228,13 +270,13 @@ SCRIPT = {  # group -> reaction scores on windows that touch the clip
 }
 
 
-def scripted_bank(path: Path, folder: Path, variant: str) -> dict:
+def scripted_bank(path: Path, folder: Path, variant: str, selection: dict | None = None) -> dict:
     """What the score stage would save for a model that scores by the clip's group."""
     manifest = json.loads((folder / "manifest.json").read_text())
     clips = core.Clips(folder, manifest)
     rule = SCRIPT[variant]
     table = {}
-    for s in core.streams(manifest["selection"]):
+    for s in core.streams(selection or manifest["selection"]):
         clip = clips.pcm(s.split, s.fname)
         start, end = em11.T0 + em11.LEAD_MS, em11.T0 + em11.LEAD_MS + clip.size * 1000 // RATE
         for w in core.stream_windows(clips.stream_pcm(s)):
@@ -422,6 +464,31 @@ def test_analysis_through_serversession(tmp_path):
     assert again["server"] == json.loads(json.dumps(result["server"])) and again["levels"] == json.loads(json.dumps(result["levels"]))
 
 
+def test_a_preflight_run_goes_through_every_stage_on_a_few_clips(tmp_path, monkeypatch):
+    folder = make_data(tmp_path / "data")
+    sel = tmp_path / "preflight.json"
+    assert core.main(["preflight", "--data", str(folder), "--out", str(sel)]) == 0
+    picked = json.loads(sel.read_text())
+    assert picked["eval"]["groups"]["laughter"] == ["101"] and len(picked["eval"][core.EVERYDAY]) == 1
+
+    monkeypatch.setattr(models, "make_scorer", lambda *a, **k: FakeScorer())
+    assert core.main(["score", "--data", str(folder), "--model", "yamnet", "--out", str(tmp_path / "pre.npz"),
+                      "--selection", str(sel)]) == 0
+    pre, metas = core.load_bank(tmp_path / "pre.npz")
+    assert pre and metas[0]["selection"] == str(sel) and "commit" in metas[0]
+
+    # Every stage reads the same small selection, so its banks hold exactly the windows it replays
+    # (the playback paired with a reaction clip depends on the selection).
+    banks = tmp_path / "banks"
+    scripted_bank(banks / "yamnet.npz", folder, "yamnet", picked)
+    scripted_bank(banks / "cut.npz", folder, "ast-cut1s", picked)
+    out = tmp_path / "out"
+    assert core.main(["analyze", "--data", str(folder), "--selection", str(sel), "--out", str(out), "--workers", "1",
+                      "--bank", f"yamnet={banks / 'yamnet.npz'}", "--bank", f"ast-cut1s={banks / 'cut.npz'}"]) == 0
+    report = json.loads((out / "report.json").read_text())
+    assert report["server"]["yamnet@dev"]["found"]["laughter"]["n"] == 1
+
+
 def test_the_lookup_model_charges_its_time_and_misses_loudly():
     pcm = noise(.975, seed=3).tobytes()
     model = analysis.LookupModel({core.window_key(pcm): np.arange(6, dtype=np.float32) / 10}, 3.0, "x")
@@ -457,7 +524,8 @@ def test_sanity_compares_every_row_with_the_committed_ones(tmp_path, monkeypatch
     assert len(links) == expected["info"]["clips"] and all(p.is_symlink() for p in links)
 
     monkeypatch.setattr(analysis.em11, "main", fake_run(change=["gasp"]))
-    assert analysis.main(argparse.Namespace(cmd="sanity", **vars(args))) == 1
+    assert analysis.main(argparse.Namespace(cmd="sanity", **vars(args))) == 0  # a finding, not a failed run
+    assert json.loads(args.out.read_text())["mismatch_count"] == 1
 
 
 # ---- prepare (needs ffmpeg) ---------------------------------------------------------------

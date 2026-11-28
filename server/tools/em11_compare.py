@@ -13,6 +13,8 @@ The work is split into stages so that each runs where it fits:
     analyze   compare without thresholds, choose levels on dev clips, then play the eval
               clips through ServerSession with those levels
     sanity    re-run em11_eval.py on the original 280 clips and compare with the committed rows
+    preflight a small selection with the clips most likely to break a stage, for a run of every
+              stage in minutes before the long ones (--selection on score and analyze)
 
 Two rules carry over from docs/em-11-evaluation.md: levels are chosen on dev clips only, and the
 same eval clips are measured once per model. This is an evaluation tool only. It adds candidate
@@ -29,6 +31,7 @@ import hashlib
 import json
 import math
 import random
+import subprocess
 import sys
 from dataclasses import dataclass
 from functools import lru_cache
@@ -110,6 +113,7 @@ SELECTION = REPO / "docs" / "em-11-compare-clips.json"
 REFERENCE = REPO / "docs" / "em-11-compare-reference.json"
 SANITY = REPO / "docs" / "em-11-compare-sanity.json"
 VARIANTS = ("yamnet", "ast-pad10s", "ast-cut1s", "ast-clip")  # ast-clip scores whole clips, not windows
+AST_SAMPLES = 163_840  # 10.24 s at 16 kHz: one AST input; ast-clip cuts longer clips into pieces this long
 
 
 # ---- choosing the clips -------------------------------------------------------------------
@@ -163,6 +167,48 @@ def select(labels_dir: Path, seed: int = SEED) -> dict:
 def selected_ids(selection: dict, split: str) -> list[str]:
     ids = [f for ids in selection[split]["groups"].values() for f in ids] + selection[split].get(EVERYDAY, [])
     return list(dict.fromkeys(ids))
+
+
+def chosen(manifest: dict, limit: int | None = None, selection: Path | None = None) -> dict:
+    """The clips a stage works on: a selection file (``preflight``), or the manifest's, cut by ``limit``."""
+    if selection:
+        return json.loads(Path(selection).read_text())
+    return limited(manifest["selection"], limit)
+
+
+def preflight(manifest: dict, per_group: int = 1) -> tuple[dict, dict]:
+    """A selection small enough to run every stage in minutes: ``per_group`` clips of every group,
+    plus, per split, the clips most likely to break a stage: the shortest, the longest, and the two
+    whose last 10.24 s AST piece would be shortest without clip_pieces. Returns it and the extra clips."""
+    full = manifest["selection"]
+    out = limited(full, per_group)
+    extra = {}
+    for split in ("eval", "dev"):
+        where = {f: g for g, ids in full[split]["groups"].items() for f in ids}
+        where |= {f: EVERYDAY for f in full[split].get(EVERYDAY, [])}
+        n = {f: manifest["files"][f"{split}/{f}"]["samples"] for f in where}
+        tails = sorted((x % AST_SAMPLES, f) for f, x in n.items() if x > AST_SAMPLES and x % AST_SAMPLES)
+        picks = [("shortest", min(n, key=n.get)), ("longest", max(n, key=n.get))]
+        picks += [(f"last piece {x} samples", f) for x, f in tails[:2]]
+        reasons: dict[str, list[str]] = {}
+        for why, f in picks:
+            reasons.setdefault(f, []).append(why)
+        for f, why in reasons.items():
+            groups = out[split]["groups"]
+            bucket = groups[where[f]] if where[f] in groups else out[split][EVERYDAY]
+            if f not in bucket:
+                bucket.append(f)
+            extra[f"{split}/{f}"] = f"{', '.join(why)}: {n[f] / em11.RATE:.2f} s, group {where[f]}"
+    return out, extra
+
+
+def code_commit() -> str | None:
+    """The git commit of this code, when it runs from a checkout."""
+    try:
+        return subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True,
+                              check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
 
 
 def limited(selection: dict, limit: int | None) -> dict:
@@ -367,6 +413,7 @@ def main(argv=None) -> int:
     c.add_argument("--sample", type=int, help="score only the first N distinct windows (precision check)")
     c.add_argument("--full", action="store_true", help="also keep every class score (float16)")
     c.add_argument("--limit", type=int)
+    c.add_argument("--selection", type=Path, help="score only these clips (a file preflight wrote)")
 
     t = sub.add_parser("timing", help="time one model per window on this machine")
     t.add_argument("--data", type=Path, required=True)
@@ -389,17 +436,31 @@ def main(argv=None) -> int:
     a.add_argument("--workers", type=int, default=4)
     a.add_argument("--limit", type=int)
     a.add_argument("--commit", help="the code's git commit, for the report")
+    a.add_argument("--selection", type=Path, help="analyze only these clips (a file preflight wrote)")
 
     y = sub.add_parser("sanity", help="em11_eval.py on the original 280 clips, compared with the committed rows")
     y.add_argument("--data", type=Path, required=True)
     y.add_argument("--work", type=Path, required=True, help="scratch folder for the em11_eval cache")
     y.add_argument("--out", type=Path, required=True)
 
+    f = sub.add_parser("preflight", help="write a small selection with the clips most likely to break a stage")
+    f.add_argument("--data", type=Path, required=True)
+    f.add_argument("--out", type=Path, required=True)
+    f.add_argument("--per-group", type=int, default=1)
+
     args = ap.parse_args(argv)
     if args.cmd == "select":
         result = select(args.labels.expanduser())
         args.out.write_text(dumps(result))
         print(json.dumps({split: result[split]["counts"] for split in ("eval", "dev")}))
+        return 0
+    if args.cmd == "preflight":
+        selection, extra = preflight(json.loads((args.data / "manifest.json").read_text()), args.per_group)
+        args.out.write_text(dumps(selection))
+        print(json.dumps({split: sum(map(len, selection[split]["groups"].values())) + len(selection[split].get(EVERYDAY, []))
+                          for split in ("eval", "dev")}))
+        for key, why in extra.items():
+            print(f"  {key}: {why}")
         return 0
     if args.cmd in ("refhash", "prepare"):
         import em11_compare_data as data

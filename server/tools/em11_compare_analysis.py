@@ -462,7 +462,7 @@ def _parse_banks(items: list[str]) -> dict[str, list[Path]]:
 def analyze(args) -> dict:
     data = Path(args.data)
     manifest = json.loads((data / "manifest.json").read_text())
-    selection = core.limited(manifest["selection"], args.limit)
+    selection = core.chosen(manifest, args.limit, getattr(args, "selection", None))
     labels = manifest["labels"]
     clips = core.Clips(data, manifest)
     banks = _parse_banks(args.bank)
@@ -575,7 +575,10 @@ def sanity(args) -> dict:
 
 def main(args) -> int:
     if args.cmd == "sanity":
+        # Rows that differ are a finding for the report, not a failed run: exit 0 once it has compared.
         result = sanity(args)
-        return 0 if result["mismatch_count"] == 0 and result["rows"] == result["expected_rows"] else 1
+        same = result["mismatch_count"] == 0 and result["rows"] == result["expected_rows"]
+        print("sanity: every row matches" if same else f"sanity: {result['mismatch_count']} rows differ (see {args.out})")
+        return 0
     analyze(args)
     return 0

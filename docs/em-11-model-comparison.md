@@ -25,7 +25,7 @@ candidate reactions are measured, not added.
 | `yamnet` | The server's own model on each 0.975 s window (`encore_server.models.YamnetModel`) | CPU, as on the server |
 | `ast-pad10s` | AST on each window, its features padded to the 10.24 s input AST was trained on | T4 GPU |
 | `ast-cut1s` | AST on each window with 100 feature frames, position embeddings cut to the middle 9 time patches (the original AST code's way to take short input). Not retrained. | T4 GPU |
-| `ast-clip` | AST on the whole clip in 10.24 s pieces, highest score of the pieces. No windows, so no server path: ranking only | T4 GPU |
+| `ast-clip` | AST on the whole clip in 10.24 s pieces (the last one ends at the clip's end, overlapping the one before), highest score of the pieces. No windows, so no server path: ranking only | T4 GPU |
 
 AST is `MIT/ast-finetuned-audioset-10-10-0.4593` from Hugging Face transformers, scores the sigmoid
 of its 527 AudioSet outputs. YAMNet's scores are its own 521 class scores. Both use AudioSet's class
@@ -155,7 +155,10 @@ prepared clips.
 **Before the first run**
 
 - A Kaggle account with a verified phone number (Kaggle requires it for GPUs and internet access).
-- This branch pushed to GitHub: the notebooks clone the public repository.
+- Both notebooks clone the public repository at `REF = "main"` (first cell). Set `REF` to a branch,
+  tag or commit only to try code that is not on `main` yet; a merged branch is deleted, so `main`
+  (or a commit) is what keeps working.
+- Import the notebooks again after they change: File → Import Notebook replaces the cells.
 
 **Notebook 1: `em11-prepare.ipynb`** (CPU, no GPU quota)
 
@@ -173,17 +176,35 @@ prepared clips.
 1. Import `server/tools/kaggle/em11-compare.ipynb` the same way.
 2. Settings: Accelerator *GPU T4 x2*; Internet *On*; Environment *Pin to original environment*.
 3. Add Input → Your Work → the **smoke** version of notebook 1's output. Do not attach FSD50K here.
-4. Save Version → *Save & Run All (Commit)*. The smoke run takes about 20–30 minutes, most of it
+4. Save Version → *Save & Run All (Commit)*. The smoke run takes about 30 minutes, most of it
    installing packages. Its last cell prints each bank's windows per second: a full run scores about
-   400 000 distinct windows per window model, so this gives the full run's length.
-5. Switch the input to notebook 1's **full** version and save a new version. The estimate is 2–4 GPU
-   hours; the free quota is about 30 GPU hours a week, and Kaggle shows what is left. A session may
-   run for up to 12 hours.
+   335 000 distinct windows per window model, so this gives the full run's length.
+5. Switch the input to notebook 1's **full** version and save a new version. A full run from nothing
+   takes about 4 GPU hours; the free quota is about 30 GPU hours a week, and Kaggle shows what is
+   left. A session may run for up to 12 hours.
 6. From the version's output, download `results/report.md`, `results/report.json` and
    `results/verify-report.md`.
 
-If a stage fails, the notebook stops, and `logs/NAME.log` in the output says why. The banks of every
-finished stage are kept in `banks/`, so the analysis can be re-run on a CPU from them.
+**Preflight: a broken stage shows in minutes, not hours.** Before any long stage, notebook 2 runs
+every stage of the full run (each model and precision, whole clips, timing, the whole analysis) on a
+small set of clips: one per group, plus each split's shortest and longest clip and the two whose last
+10.24 s piece is shortest (the kind of clip that stopped the first full run after three hours). It
+takes about 10 minutes. Watch the log for `PREFLIGHT PASSED`; if it does not appear, the notebook has
+stopped and the error is above. To build that set yourself:
+`em11_compare.py preflight --data DATA --out selection.json`, then pass `--selection selection.json`
+to `score` and `analyze`.
+
+**Continuing a run that stopped.** Score files are kept in `banks/` of the version's output even
+when a stage fails, and `logs/NAME.log` says why it failed. To continue, keep notebook 1's input and
+also attach the stopped version's output (Add Input → Your Work → notebook 2, that version). With
+`RESUME = True` (the default), every score file made from the same prepared data is copied in and its
+stage is skipped (the log says *kept from an earlier run*); files from other prepared data, or from a
+preflight, are not used. The cheap stages run first (`ast-clip` and the sanity check, then
+`ast-cut1s`, then YAMNet with `ast-pad10s`), so a run that stops late has the most to reuse.
+
+`server/tests/test_em11_notebooks.py` runs notebook 2 cell by cell with stand-ins for the models,
+checking every command it would give the tool, so a mistake in the notebook itself fails the tests
+before it can cost GPU hours.
 
 **One stage at a time, anywhere** (for reference; each takes `--help`):
 
