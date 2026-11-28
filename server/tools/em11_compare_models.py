@@ -31,7 +31,18 @@ import numpy as np
 
 import em11_compare as core
 
-CLIP_SAMPLES = 163_840  # 10.24 s at 16 kHz: one AST input
+CLIP_SAMPLES = core.AST_SAMPLES  # 10.24 s at 16 kHz: one AST input
+FBANK_MIN = 400  # one 25 ms Kaldi frame at 16 kHz: the shortest audio AST's features accept
+
+
+def clip_pieces(n: int, size: int = CLIP_SAMPLES) -> list[tuple[int, int]]:
+    """(start, end) of the AST inputs that cover an n-sample clip. A clip up to 10.24 s is one piece.
+    A longer one is cut into 10.24 s pieces from the start, and the last piece is the clip's final
+    10.24 s (it may overlap the one before). No piece is a short leftover: a 127-sample tail once
+    stopped a whole run, because AST's features need at least FBANK_MIN samples."""
+    if n <= size:
+        return [(0, n)]
+    return [(s, s + size) for s in [*range(0, n - size, size), n - size]]
 
 
 def cut_positions(pe, freq: int, time_: int, keep: int, cat=np.concatenate):
@@ -142,9 +153,11 @@ class AstScorer:
         return self._run([np.frombuffer(p, "<i2").astype(np.float32) / 32768 for p in batch])
 
     def clip(self, pcm: np.ndarray, batch: int = 8) -> np.ndarray:
-        """Whole clip: 10.24 s pieces (the last one padded), highest score per class."""
+        """Whole clip: 10.24 s pieces (clip_pieces), highest score per class."""
         wave = pcm.astype(np.float32) / 32768
-        pieces = [wave[i:i + CLIP_SAMPLES] for i in range(0, max(len(wave), 1), CLIP_SAMPLES)]
+        if len(wave) < FBANK_MIN:
+            wave = np.pad(wave, (0, FBANK_MIN - len(wave)))
+        pieces = [wave[a:b] for a, b in clip_pieces(len(wave))]
         return np.concatenate([self._run(pieces[i:i + batch]) for i in range(0, len(pieces), batch)]).max(axis=0)
 
 
@@ -156,9 +169,9 @@ def make_scorer(variant: str, weights, device: str, precision: str, threads: int
     return AstScorer(variant, weights, device, precision, threads)
 
 
-def _load(data: Path, limit):
+def _load(data: Path, limit, selection=None):
     manifest = json.loads((data / "manifest.json").read_text())
-    return manifest, core.limited(manifest["selection"], limit), core.Clips(data, manifest)
+    return manifest, core.chosen(manifest, limit, selection), core.Clips(data, manifest)
 
 
 def verify_inputs(data: Path, manifest: dict, keys) -> None:
@@ -169,7 +182,7 @@ def verify_inputs(data: Path, manifest: dict, keys) -> None:
 
 def score(args) -> dict:
     data = Path(args.data)
-    manifest, selection, clips = _load(data, args.limit)
+    manifest, selection, clips = _load(data, args.limit, getattr(args, "selection", None))
     sets = [s for s in args.sets.split(",") if s]
     unknown = set(sets) - set(core.SETS)
     if unknown:
@@ -225,7 +238,8 @@ def score(args) -> dict:
             "sample": args.sample, "rows": len(keys), "model_seconds": round(model_s, 1),
             "per_second": round(len(keys) / model_s, 1) if model_s else None, "batch": args.batch,
             "wall_seconds": round(time.time() - started), "finished": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "data_created": manifest["created"], "scorer": scorer.meta, "environment": environment(),
+            "data_created": manifest["created"], "selection": str(args.selection) if getattr(args, "selection", None) else None,
+            "commit": core.code_commit(), "scorer": scorer.meta, "environment": environment(),
             "labels": scorer.labels if args.full else None}
     core.save_bank(Path(args.out), keys, np.concatenate(rows) if rows else np.zeros((0, len(core.REACTIONS))), meta,
                    np.concatenate(full) if full else None)
@@ -257,7 +271,7 @@ def timing(args) -> dict:
     result = {"variant": args.model, "device": args.device, "threads": args.threads, "precision": args.precision,
               "windows": len(times), "median_ms": round(statistics.median(times), 1),
               "p90_ms": round(times[min(len(times) - 1, int(0.9 * len(times)))], 1),
-              "scorer": scorer.meta, "environment": environment()}
+              "commit": core.code_commit(), "scorer": scorer.meta, "environment": environment()}
     Path(args.out).write_text(json.dumps(result, indent=1) + "\n")
     print(json.dumps({k: result[k] for k in ("variant", "device", "threads", "median_ms", "p90_ms")}))
     return result
