@@ -2,7 +2,9 @@
 
 CSE406 Software Engineering · Group Encore · Hanyang University
 
-Encore Moment is a PC application designed to capture an audience’s reactions while they watch a video. When a viewer laughs, screams, or gasps, the system saves the moments before and after the reaction as a local clip for review in Tonight’s Highlights.
+Encore Moment captures an audience's reactions while they watch something together. When a viewer laughs, screams, or gasps, it saves the moments before and after the reaction as a clip for review in Tonight's Highlights.
+
+This repository builds Encore Moment as a PC application, the platform where the team can access the camera, microphone, and playback audio that detection needs. The goal is to run the same flow on LG home devices such as a smart TV, the CLOiD home robot, and an LG gram laptop, so that people's reactions can be saved as memories wherever they are captured.
 
 <p>
   <a href="https://giphy.com/gifs/OnceInHollywood-leonardo-dicaprio-leo-kd9BlRovbPOykLBMqX"><img src="https://media.giphy.com/media/kd9BlRovbPOykLBMqX/giphy.gif" width="280" alt="Leonardo DiCaprio leans forward in his chair and points at the TV."></a><br>
