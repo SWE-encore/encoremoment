@@ -3,11 +3,13 @@
 A full notebook 2 run takes hours, so a mistake in its own code (a wrong flag, shard or file name,
 or resume that reuses the wrong files) must show here, not on Kaggle. Notebook 2 runs cell by cell:
 each command it gives the tool goes through the tool's real argument parser and writes a stand-in
-output; git, pip, GPUs and models are never touched.
+output; git, pip, GPUs and models are never touched. Kaggle keeps no output of a version that ends
+in an error, so after the preflight a failed stage must not fail the notebook.
 """
 import ast
 import builtins
 import io
+import subprocess
 import json
 import sys
 import tarfile
@@ -45,6 +47,8 @@ def test_notebook_code_parses_and_defines_every_name_it_reads(name):
             defined.add(node.name)
         elif isinstance(node, ast.arg):
             defined.add(node.arg)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            defined.add(node.name)
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             defined |= {(a.asname or a.name).split(".")[0] for a in node.names}
     unknown = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)} - defined
@@ -64,10 +68,11 @@ def bank(path, variant, precision="fp32", created=CREATED, **meta):
 
 
 class Stand:
-    """Stand-ins for the commands notebook 2 runs, recording what the tool was asked to do."""
+    """Stand-ins for the commands notebook 2 runs, recording what the tool was asked to do. A command
+    whose output file is named in ``fail`` fails, as a crashing stage would."""
 
-    def __init__(self, monkeypatch):
-        self.ran = []
+    def __init__(self, monkeypatch, fail=()):
+        self.ran, self.fail = [], set(fail)
         fake = types.ModuleType("fake")
         fake.main = self._handle
         for module in ("em11_compare_models", "em11_compare_analysis"):
@@ -75,10 +80,15 @@ class Stand:
         monkeypatch.setattr(core, "preflight", lambda m, n: ({"eval": {"groups": {}}, "dev": {"groups": {}}}, {}))
 
     def tool(self, argv):
+        """Run one tool command; False if it fails."""
         argv = [str(a) for a in argv]
+        if "--out" in argv and Path(argv[argv.index("--out") + 1]).stem in self.fail:
+            self.ran.append(("failed", Path(argv[argv.index("--out") + 1]).stem))
+            return False
         assert core.main(argv) == 0
         if argv[0] == "preflight":
             self.ran.append(("preflight",))
+        return True
 
     def _handle(self, a):
         if a.cmd == "score":
@@ -109,8 +119,8 @@ class Stand:
         if cmd[0] == "tar":
             with tarfile.open(cmd[2]) as t:
                 t.extractall(cmd[4], filter="data")
-        elif len(cmd) > 1 and cmd[1].endswith("em11_compare.py"):
-            self.tool(cmd[2:])
+        elif len(cmd) > 1 and cmd[1].endswith("em11_compare.py") and not self.tool(cmd[2:]) and check:
+            raise subprocess.CalledProcessError(1, cmd)
         return 0
 
     @staticmethod
@@ -127,13 +137,19 @@ class Stand:
         raise AssertionError(f"unexpected command: {text}")
 
     def popen(self, cmd, stdout=None, stderr=None, cwd=None):
-        self.tool(cmd[2:])
-        stdout.write("done\n")
+        code = 0 if self.tool(cmd[2:]) else 1
+        stdout.write("done\n" if not code else "RuntimeError: stand-in failure\n")
         stdout.flush()
-        return types.SimpleNamespace(returncode=0, poll=lambda: 0, terminate=lambda: None)
+        return types.SimpleNamespace(returncode=code, poll=lambda: code, terminate=lambda: None)
 
 
-def test_compare_notebook_preflights_then_reuses_an_earlier_runs_scores(tmp_path, monkeypatch, capsys):
+FINISHED = ["yamnet", "pad10s-fp32-0", "pad10s-fp32-1", "pad10s-fp16-0", "pad10s-fp16-1", "cut1s-0", "cut1s-1"]
+
+
+def run_notebook(tmp_path, monkeypatch, fail=(), earlier=True):
+    """Run em11-compare.ipynb cell by cell with stand-ins; with ``earlier``, the output of a run in which
+    every stage but ast-clip finished is attached. Returns the notebook's names, the stand-ins and the
+    Kaggle working folder."""
     places = {p: tmp_path / Path(p).name for p in ("/kaggle/working", "/kaggle/input", "/tmp/encoremoment",
                                                    "/tmp/em11-data", "/tmp/ast", "/tmp/preflight", "/tmp/sanity")}
     for p in places.values():
@@ -147,15 +163,15 @@ def test_compare_notebook_preflights_then_reuses_an_earlier_runs_scores(tmp_path
             info = tarfile.TarInfo(f"em11-data/{name}")
             info.size = len(text.encode())
             t.addfile(info, io.BytesIO(text.encode()))
-    earlier = tmp_path / "input/notebooks/me/compare/banks"  # the failed run: every stage but ast-clip finished
-    earlier.mkdir(parents=True)
-    finished = ["yamnet", "pad10s-fp32-0", "pad10s-fp32-1", "pad10s-fp16-0", "pad10s-fp16-1", "cut1s-0", "cut1s-1"]
-    for name in finished:
-        bank(earlier / f"{name}.npz", "ast")
-    bank(earlier / "clip-0.npz", "ast-clip", created="another prepare run")
-    bank(earlier / "clip-1.npz", "ast-clip", selection="/tmp/preflight/selection.json")
+    if earlier:
+        folder = tmp_path / "input/notebooks/me/compare/banks"
+        folder.mkdir(parents=True)
+        for name in FINISHED:
+            bank(folder / f"{name}.npz", "ast")
+        bank(folder / "clip-0.npz", "ast-clip", created="another prepare run")
+        bank(folder / "clip-1.npz", "ast-clip", selection="/tmp/preflight/selection.json")
 
-    stand = Stand(monkeypatch)
+    stand = Stand(monkeypatch, fail)
     for var in ("TF_CPP_MIN_LOG_LEVEL", "TFHUB_CACHE_DIR"):  # the notebook sets these; put them back after
         monkeypatch.setenv(var, "")
     monkeypatch.setitem(sys.modules, "IPython.display", types.SimpleNamespace(Markdown=str, display=lambda *a: None))
@@ -168,11 +184,16 @@ def test_compare_notebook_preflights_then_reuses_an_earlier_runs_scores(tmp_path
             ns.update(sh=stand.sh, out=stand.out, venv=lambda name, requirements: f"/venv-{name}/bin/python",
                       subprocess=types.SimpleNamespace(Popen=stand.popen, STDOUT=-2),
                       time=types.SimpleNamespace(time=time.time, sleep=lambda s: None))
+    return ns, stand, places["/kaggle/working"]
 
-    assert sorted(ns["REUSED"]) == sorted(f"{n}.npz" for n in finished)
+
+def test_compare_notebook_preflights_then_reuses_an_earlier_runs_scores(tmp_path, monkeypatch, capsys):
+    ns, stand, work = run_notebook(tmp_path, monkeypatch)
+
+    assert sorted(ns["REUSED"]) == sorted(f"{n}.npz" for n in FINISHED)
     log = capsys.readouterr().out
     assert log.index("PREFLIGHT PASSED") < log.index("started clip-0")
-    assert all(f"{n}: kept from an earlier run" in log for n in finished)
+    assert all(f"{n}: kept from an earlier run" in log for n in FINISHED)
 
     order = [r[0] for r in stand.ran]
     preflight = stand.ran[:order.index("analyze") + 1]
@@ -184,4 +205,39 @@ def test_compare_notebook_preflights_then_reuses_an_earlier_runs_scores(tmp_path
     main = stand.ran[len(preflight):]
     assert [r[1] for r in main if r[0] == "score"] == ["clip-0.npz", "clip-1.npz", "pad10s-fp16-sample.npz"]
     assert ("sanity",) in main and main[-1] == ("analyze", 4, True, False)
-    assert (places["/kaggle/working"] / "results/report.md").exists()
+    assert (work / "results/report.md").exists()
+    assert json.loads((work / "results/run.json").read_text())["complete"] is True
+    assert "RUN COMPLETE" in log and "RUN INCOMPLETE" not in log
+
+
+@pytest.mark.parametrize("fail, earlier, failed, scored", [
+    # whole clips fail on one GPU: the other GPU's share, the fp16 sample and the timings still run
+    (["clip-1", "cut1s-t4"], True, {"clip-1": "exit 1", "timing cut1s-t4": "CalledProcessError",
+                                    "analyze": "not run: needs clip-1.npz"},
+     ["clip-0.npz", "pad10s-fp16-sample.npz"]),
+    # a fresh run whose full-precision share fails: the half-precision stage that skips its windows waits
+    (["pad10s-fp32-0"], False, {"pad10s-fp32-0": "exit 1", "pad10s-fp16-0": "not run: needs pad10s-fp32-0.npz",
+                                "pad10s-fp16-1": "not run: needs pad10s-fp32-0.npz", "analyze": "not run: needs"},
+     ["clip-0.npz", "clip-1.npz", "cut1s-0.npz", "cut1s-1.npz", "yamnet.npz", "pad10s-fp32-1.npz",
+      "pad10s-fp16-sample.npz"]),
+])
+def test_a_stage_that_fails_after_the_preflight_still_lets_the_notebook_finish(
+        tmp_path, monkeypatch, capsys, fail, earlier, failed, scored):
+    ns, stand, work = run_notebook(tmp_path, monkeypatch, fail=fail, earlier=earlier)  # no exception: Kaggle keeps the output
+
+    assert set(ns["FAILED"]) == set(failed)
+    assert all(ns["FAILED"][name].startswith(why) for name, why in failed.items())
+    after = stand.ran[[r[0] for r in stand.ran].index("analyze") + 1:]  # the preflight passed
+    assert [r[1] for r in after if r[0] == "score"] == scored
+    assert not any(r[0] == "analyze" for r in after)
+    assert sorted(f.name for f in (work / "banks").glob("*.npz")) == sorted(
+        scored + ([f"{n}.npz" for n in FINISHED] if earlier else []))
+    run = json.loads((work / "results/run.json").read_text())
+    assert run["complete"] is False and set(run["failed"]) == set(failed)
+    assert "RUN INCOMPLETE" in capsys.readouterr().out
+    assert (work / "results/verify-report.md").exists()
+
+
+def test_a_failure_in_the_preflight_stops_the_notebook_before_any_long_stage(tmp_path, monkeypatch):
+    with pytest.raises(RuntimeError, match="preflight-clip failed"):
+        run_notebook(tmp_path, monkeypatch, fail=["clip"])

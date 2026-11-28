@@ -194,17 +194,25 @@ stopped and the error is above. To build that set yourself:
 `em11_compare.py preflight --data DATA --out selection.json`, then pass `--selection selection.json`
 to `score` and `analyze`.
 
-**Continuing a run that stopped.** Score files are kept in `banks/` of the version's output even
-when a stage fails, and `logs/NAME.log` says why it failed. To continue, keep notebook 1's input and
-also attach the stopped version's output (Add Input → Your Work → notebook 2, that version). With
-`RESUME = True` (the default), every score file made from the same prepared data is copied in and its
-stage is skipped (the log says *kept from an earlier run*); files from other prepared data, or from a
-preflight, are not used. The cheap stages run first (`ast-clip` and the sanity check, then
-`ast-cut1s`, then YAMNet with `ast-pad10s`), so a run that stops late has the most to reuse.
+**After the preflight, the notebook always finishes.** Kaggle keeps no output of a version that ends
+in an error: the first full run's three hours of score files were lost that way. So after
+`PREFLIGHT PASSED`, a failed stage is recorded and the stages that do not need it go on (a stage that
+needs a missing file is recorded as *not run*, and so is the analysis when any score file is
+missing). The last cell prints `RUN INCOMPLETE` with what failed, `results/run.json` has the same
+list, and `logs/NAME.log` says why. Do not stop a run after the preflight: a stopped version may keep
+nothing either.
+
+**Continuing a run that did not complete.** Keep notebook 1's input and also attach that version's
+output (Add Input → Your Work → notebook 2, that version; if Kaggle does not offer it, make a dataset
+from the version's output and attach that). With `RESUME = True` (the default), every score file
+made from the same prepared data is copied in and its stage is skipped (the log says *kept from an
+earlier run*); files from other prepared data, or from a preflight, are not used. The cheap stages
+run first (`ast-clip` and the sanity check, then `ast-cut1s`, then YAMNet with `ast-pad10s`), so a run
+that fails late has the most to reuse.
 
 `server/tests/test_em11_notebooks.py` runs notebook 2 cell by cell with stand-ins for the models,
-checking every command it would give the tool, so a mistake in the notebook itself fails the tests
-before it can cost GPU hours.
+checking every command it would give the tool and that a stage failing after the preflight still lets
+the notebook finish, so a mistake in the notebook itself fails the tests before it can cost GPU hours.
 
 **One stage at a time, anywhere** (for reference; each takes `--help`):
 
